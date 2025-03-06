@@ -288,6 +288,7 @@ class IPSecurityLibrary {
         ];
 
         $osPatterns = [
+            '/windows nt 11/i'      => ['Windows 11', 'NT 11.0'],
             '/windows nt 10/i'      => ['Windows 10', 'NT 10.0'],
             '/windows nt 6.3/i'     => ['Windows 8.1', 'NT 6.3'],
             '/windows nt 6.2/i'     => ['Windows 8', 'NT 6.2'],
@@ -300,11 +301,31 @@ class IPSecurityLibrary {
             '/mac_powerpc/i'        => ['Mac OS 9', ''],
             '/linux/i'              => ['Linux', ''],
             '/ubuntu/i'             => ['Ubuntu', ''],
+            '/debian/i'             => ['Debian', ''],
+            '/fedora/i'             => ['Fedora', ''],
+            '/centos/i'             => ['CentOS', ''],
+            '/redhat/i'             => ['Red Hat', ''],
+            '/mint/i'               => ['Linux Mint', ''],
+            '/arch/i'               => ['Arch Linux', ''],
             '/iphone/i'             => ['iPhone', 'iOS'],
             '/ipod/i'               => ['iPod', 'iOS'],
             '/ipad/i'               => ['iPad', 'iOS'],
             '/android/i'            => ['Android', ''],
-            '/webos/i'              => ['Mobile', '']
+            '/webos/i'              => ['Mobile', ''],
+            '/chromeos|cros/i'      => ['Chrome OS', ''],
+            '/freebsd/i'            => ['FreeBSD', ''],
+            '/openbsd/i'            => ['OpenBSD', ''],
+            '/netbsd/i'             => ['NetBSD', ''],
+            '/sunos/i'              => ['SunOS', ''],
+            '/solaris/i'            => ['Solaris', ''],
+            '/playstation/i'        => ['PlayStation', ''],
+            '/xbox/i'               => ['Xbox', ''],
+            '/nintendo/i'           => ['Nintendo', ''],
+            '/roku/i'               => ['Roku', ''],
+            '/tizen/i'              => ['Tizen', ''],
+            '/sailfish/i'           => ['Sailfish OS', ''],
+            '/harmony/i'            => ['Harmony OS', ''],
+            '/kaios/i'              => ['KaiOS', '']
         ];
 
         foreach ($osPatterns as $pattern => $osInfo) {
@@ -558,17 +579,38 @@ class IPSecurityLibrary {
 
     private function getDeviceBrand(string $userAgent): string {
         $brands = [
-            'Apple' => '/iphone|ipad|ipod|macintosh/i',
-            'Samsung' => '/samsung/i',
-            'Huawei' => '/huawei/i',
-            'Xiaomi' => '/xiaomi|redmi/i',
-            'LG' => '/lg/i',
-            'Sony' => '/sony/i',
-            'HTC' => '/htc/i',
-            'Motorola' => '/motorola/i',
-            'Nokia' => '/nokia/i',
-            'Microsoft' => '/windows phone/i',
-            'Google' => '/pixel/i'
+            'Apple' => '/iphone|ipad|ipod|macintosh|mac os|iwatch|airpods/i',
+            'Samsung' => '/samsung|galaxy|sm-[a-z0-9]+/i',
+            'Huawei' => '/huawei|honor|h60|h30|mate|p[0-9]+|nova/i',
+            'Xiaomi' => '/xiaomi|redmi|poco|mi [0-9]|mi note|mi max|mi mix|mi pad/i',
+            'LG' => '/lg|lge|lm-[a-z0-9]+/i',
+            'Sony' => '/sony|xperia|sonyericsson/i',
+            'HTC' => '/htc|htc_|htc-/i',
+            'Motorola' => '/motorola|moto [a-z]|moto[a-z][0-9]|moto g|moto e|moto x/i',
+            'Nokia' => '/nokia|lumia|maemo/i',
+            'Microsoft' => '/windows phone|windows mobile|microsoft|lumia/i',
+            'Google' => '/pixel|nexus/i',
+            'OnePlus' => '/oneplus|one plus|op[0-9][0-9]|nord/i',
+            'OPPO' => '/oppo|cph[0-9]+|find x|reno/i',
+            'Vivo' => '/vivo|v[0-9]+[a-z]?/i',
+            'Realme' => '/realme|rmx[0-9]+/i',
+            'Asus' => '/asus|zenfone|zenpad|zenbook|rog phone/i',
+            'Lenovo' => '/lenovo|thinkpad|ideapad|yoga/i',
+            'Acer' => '/acer|aspire|predator/i',
+            'Dell' => '/dell|xps|inspiron|latitude|precision/i',
+            'HP' => '/hp|hewlett-packard|pavilion|envy|spectre|omen/i',
+            'Toshiba' => '/toshiba|satellite|portege|tecra/i',
+            'BlackBerry' => '/blackberry|bb[0-9]+|rim tablet/i',
+            'ZTE' => '/zte|blade|axon|nubia/i',
+            'Alcatel' => '/alcatel|one touch/i',
+            'TCL' => '/tcl|alcatel|idol/i',
+            'Meizu' => '/meizu|m[0-9]+/i',
+            'Sharp' => '/sharp|aquos/i',
+            'Philips' => '/philips|phl/i',
+            'BQ' => '/bq|aquaris/i',
+            'Wiko' => '/wiko|view|sunny|lenny|jerry/i',
+            'Nothing' => '/nothing phone/i',
+            'Fairphone' => '/fairphone/i'
         ];
         
         foreach ($brands as $brand => $pattern) {
@@ -610,7 +652,51 @@ class IPSecurityLibrary {
             'ru' => 'Русский',
             'ar' => 'العربية',
             'zh' => '中文',
-            'ja' => '日本語'
+            'ja' => '日本語',
+            'ko' => '한국어',
+            'pt' => 'Português',
+            'nl' => 'Nederlands',
+            'pl' => 'Polski',
+            'sv' => 'Svenska',
+            'da' => 'Dansk',
+            'fi' => 'Suomi',
+            'no' => 'Norsk',
+            'cs' => 'Čeština',
+            'hu' => 'Magyar',
+            'el' => 'Ελληνικά',
+            'he' => 'עברית',
+            'hi' => 'हिन्दी',
+            'th' => 'ไทย',
+            'vi' => 'Tiếng Việt',
+            'id' => 'Bahasa Indonesia',
+            'ms' => 'Bahasa Melayu',
+            'fa' => 'فارسی',
+            'uk' => 'Українська',
+            'ro' => 'Română',
+            'bg' => 'Български',
+            'hr' => 'Hrvatski',
+            'sr' => 'Српски',
+            'sk' => 'Slovenčina',
+            'sl' => 'Slovenščina',
+            'et' => 'Eesti',
+            'lv' => 'Latviešu',
+            'lt' => 'Lietuvių',
+            'az' => 'Azərbaycan',
+            'kk' => 'Қазақша',
+            'uz' => 'O\'zbek',
+            'hy' => 'Հայերեն',
+            'ka' => 'ქართული',
+            'bn' => 'বাংলা',
+            'ur' => 'اردو',
+            'ta' => 'தமிழ்',
+            'te' => 'తెలుగు',
+            'ml' => 'മലയാളം',
+            'mr' => 'मराठी',
+            'ne' => 'नेपाली',
+            'si' => 'සිංහල',
+            'km' => 'ខ្មែរ',
+            'lo' => 'ລາວ',
+            'my' => 'မြန်မာ'
         ];
         
         $code = strtolower(substr($code, 0, 2));
@@ -618,11 +704,92 @@ class IPSecurityLibrary {
     }
 
     private function isMobileDevice(string $userAgent): bool {
-        return preg_match('/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated/i', $userAgent) === 1;
+        $mobilePatterns = [
+            // Genel mobil belirteçler
+            '/Mobile|Portable|Tablet|Android|Touch/i',
+            
+            // Apple cihazlar
+            '/iP(hone|od|ad)|iOS|iPhone OS/i',
+            
+            // Android cihazlar
+            '/Android.*Mobile|Android.*Chrome|Android.*Firefox/i',
+            
+            // Windows mobil cihazlar
+            '/Windows Phone|Windows Mobile|Windows CE|IEMobile|WPDesktop|ZuneWP7/i',
+            
+            // Diğer mobil işletim sistemleri
+            '/BlackBerry|BB10|RIM Tablet OS|webOS|PalmOS|bada|Tizen|Kindle|Silk|KF[A-Z][A-Z]|FBAN|FBAV/i',
+            
+            // Mobil tarayıcılar
+            '/Opera Mini|Opera Mobi|OPiOS|Coast|Instagram|FBAN|FBAV/i',
+            
+            // Akıllı saatler ve giyilebilir cihazlar
+            '/Watch|Glass|Gear|Fitbit|Galaxy Watch|Mi Band|Apple Watch/i',
+            
+            // Oyun konsolları
+            '/Nintendo|PlayStation|Xbox|PS[0-9]|PSP/i',
+            
+            // Diğer mobil cihazlar
+            '/Symbian|Series[0-9]|S60|SonyEricsson|Nokia|DoCoMo|KDDI|UP.Browser|J2ME|MIDP|cldc|NetFront|Dolfin|Jasmine|Fennec/i',
+            
+            // Mobil operatör belirteçleri
+            '/Vodafone|T-Mobile|Sprint|AT&T|Verizon|O2|Orange|Turkcell|Turk Telekom|TTNET/i'
+        ];
+        
+        foreach ($mobilePatterns as $pattern) {
+            if (preg_match($pattern, $userAgent) === 1) {
+                return true;
+            }
+        }
+        
+        return false;
     }
 
     private function isTabletDevice(string $userAgent): bool {
-        return preg_match('/iPad|Android(?!.*Mobile)|Tablet|Kindle|PlayBook/i', $userAgent) === 1;
+        $tabletPatterns = [
+            // Genel tablet belirteçler
+            '/Tablet|tab/i',
+            
+            // iPad ve iOS tabletler
+            '/iPad|iPad.*Mobile|iPad.*Safari/i',
+            
+            // Android tabletler (mobil olmayan)
+            '/Android(?!.*Mobile)|Android.*Chrome(?!.*Mobile)|Android.*Firefox(?!.*Mobile)/i',
+            
+            // Windows tabletler
+            '/Windows.*Touch|Windows.*Tablet|Windows NT.*Touch|Windows.*ARM|KFAPWI/i',
+            
+            // Amazon Kindle ve Fire tabletler
+            '/Kindle|Silk|KFTT|KFOT|KFJWA|KFJWI|KFSOWI|KFTHWA|KFTHWI|KFAPWA|KFAPWI|KFARWI|KFASWI|KFTBWI|KFMEWI|KFFOWI|KFSAWA|KFSAWI|KFARWI|KFASWI|KFTBWI|KFMEWI|KFFOWI/i',
+            
+            // Samsung tabletler
+            '/SM-T|GT-P|SC-01C|SCH-I800|SGH-I987|SGH-T849|SGH-T859|SGH-T869|SPH-P100|GT-P1000|GT-P3100|GT-P3110|GT-P5100|GT-P5110|GT-P6200|GT-P6800|GT-P7100|GT-P7300|GT-P7310|GT-P7500|GT-P7510|SCH-I800|SCH-I815|SCH-I905|SGH-I957|SGH-I987|SGH-T849|SGH-T859|SGH-T869|SPH-P100|GT-P3113|GT-P5113|GT-P8110|GT-N8000|GT-N8010|GT-N8020|GT-N5100|GT-N5110|SHV-E140K|SHV-E140L|SHV-E140S|SHV-E150S|SHV-E230K|SHV-E230L|SHV-E230S|SHW-M180K|SHW-M180L|SHW-M180S|SHW-M180W|SHW-M300W|SHW-M305W|SHW-M380K|SHW-M380S|SHW-M380W|SHW-M430W|SHW-M480K|SHW-M480S|SHW-M480W|SHW-M485W|SHW-M486W|SHW-M500W|GT-I9500|GT-I9502|GT-I9505|GT-I9508|SM-P900|SM-P901|SM-P905|SM-T111|SM-T210|SM-T211|SM-T230|SM-T231|SM-T235|SM-T280|SM-T285|SM-T310|SM-T311|SM-T315|SM-T320|SM-T321|SM-T325|SM-T330|SM-T331|SM-T335|SM-T350|SM-T355|SM-T360|SM-T365|SM-T370|SM-T375|SM-T377|SM-T380|SM-T385|SM-T510|SM-T515|SM-T520|SM-T525|SM-T530|SM-T535|SM-T550|SM-T555|SM-T560|SM-T561|SM-T580|SM-T585|SM-T587|SM-T590|SM-T595|SM-T597|SM-T710|SM-T713|SM-T715|SM-T719|SM-T720|SM-T725|SM-T810|SM-T815|SM-T817|SM-T819|SM-T820|SM-T825|SM-T827|SM-T830|SM-T835|SM-T837|SM-T860|SM-T865|SM-T867|SM-P610|SM-P615|SM-T290|SM-T295|SM-T500|SM-T505|SM-T220|SM-T225|SM-T970|SM-T975|SM-T976|SM-T870|SM-T875|SM-T876|SM-T730|SM-T735|SM-T736|SM-X700|SM-X706|SM-X800|SM-X806|SM-X900|SM-X906/i',
+            
+            // Huawei tabletler
+            '/MediaPad|HUAWEI.*MediaPad|MediaPad.*Huawei|AGS2-W09|AGS2-L09|AGS2-L03|AGS2-W19|BAH2-W19|BAH2-L09|BAH2-W09|BAH-W09|BAH-L09|BG2-W09|CMR-W09|CMR-AL09|CMR-W19|CPN-W09|CPN-AL00|JDN2-W09|JDN2-L09|M2-801L|M2-801W|M2-802L|M2-803L|M3-801L|M3-801W|M3-802L|M3-803L|M5-801L|M5-801W|M5-802L|M5-803L|M6-801L|M6-801W|M6-802L|M6-803L|SCM-W09|SHT-W09|SHT-AL09|AGS3-W09|AGS3-L09|DBY-W09|DBY-L09|HarmonyOS|MatePad/i',
+            
+            // Lenovo tabletler
+            '/Lenovo.*Tab|IdeaTab|IdeaPad|Lenovo.*Yoga|Yoga.*Tab|TB-X103F|TB-X304F|TB-X304L|TB-X304X|TB-X505F|TB-X505L|TB-X505X|TB-X605F|TB-X605L|TB-X605LC|TB-X606F|TB-X606FA|TB-X606X|TB-J606F|TB-J606L|TB-8504F|TB-8504X|TB-8504L|TB-8704F|TB-8704X|TB-8704V|TB-8704N|TB-7504F|TB-7504X|TB-7504L|TB-7304F|TB-7304X|TB-7304I|TB-7304L|TB-X304F|TB-X304L|TB-X304X|TB-X505F|TB-X505L|TB-X505X|TB-X605F|TB-X605L|TB-X605LC|TB-X606F|TB-X606FA|TB-X606X|TB-J606F|TB-J606L/i',
+            
+            // Asus tabletler
+            '/ASUS.*Pad|Transformer|TF101|TF201|TF300|TF700|TF701|TF810|ME171|ME172|ME173|ME176|ME176C|ME176CE|ME181|ME181C|ME302|ME302C|ME302KL|ME371|ME372|ME372CG|ME372CL|ME572|ME572C|ME572CL|ME176|ME176C|ME176CE|ME181|ME181C|ME302|ME302C|ME302KL|ME371|ME372|ME372CG|ME372CL|ME572|ME572C|ME572CL|P01Y|P01Z|P01T|P01V|P01MA|P01W|P00C|P00I|P00A|P01W|P01V|P01MA|P01T|P01Z|P01Y|P00C|P00I|P00A/i',
+            
+            // Diğer tablet üreticileri
+            '/PlayBook|RIM Tablet|HTC.*Flyer|HTC.*Jetstream|HTC.*Tablet|Nexus 7|Nexus 9|Nexus 10|Dell.*Streak|Dell.*Venue|Dell.*Latitude|HP.*TouchPad|Venue 8|Venue 7|Venue 10|XiaoMi.*Pad|Mi.*Pad|Redmi.*Pad|OPPO.*Pad|vivo.*Pad|realme.*Pad|TCL.*Tab|Honor.*Pad|Nokia.*Tab/i'
+        ];
+        
+        foreach ($tabletPatterns as $pattern) {
+            if (preg_match($pattern, $userAgent) === 1) {
+                return true;
+            }
+        }
+        
+        // Mobil olmayan Android cihazları tablet olarak kabul et
+        if (preg_match('/Android/i', $userAgent) === 1 && preg_match('/Mobile/i', $userAgent) === 0) {
+            return true;
+        }
+        
+        return false;
     }
 
     private function isDesktopDevice(string $userAgent): bool {
