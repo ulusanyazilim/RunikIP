@@ -57,9 +57,79 @@ echo "<h3>Endpoint</h3>";
 echo "<div class='endpoint'><span class='method'>GET</span> /api.php</div>";
 
 // Parametreler
-echo "<h3>Parametreler</h3>";
+echo "<h3>Dönen Veri Alanları</h3>";
 echo "<ul>";
-echo "<li><code>ip</code> (opsiyonel) - Sorgulanacak IP adresi. Belirtilmezse ziyaretçinin IP'si kullanılır.</li>";
+echo "<li><code>ip</code> - Sorgulanan IP adresi</li>";
+echo "<li><code>timestamp</code> - Sorgu zamanı (Unix timestamp)</li>";
+echo "<li><code>location</code> - Coğrafi konum bilgileri
+    <ul>
+        <li>country (ülke bilgileri)</li>
+        <li>region (bölge bilgileri)</li>
+        <li>city (şehir)</li>
+        <li>postal_code (posta kodu)</li>
+        <li>location (enlem/boylam)</li>
+    </ul>
+</li>";
+echo "<li><code>network_info</code> - Ağ bilgileri
+    <ul>
+        <li>is_datacenter (Datacenter IP mi?)</li>
+        <li>is_isp (ISP IP'si mi?)</li>
+        <li>asn_info (ASN bilgileri)
+            <ul>
+                <li>asn (Autonomous System Number)</li>
+                <li>organization (Organizasyon adı)</li>
+                <li>isp (Internet Service Provider)</li>
+            </ul>
+        </li>
+        <li>proxy_type (Proxy tipi bilgileri)
+            <ul>
+                <li>name (Proxy servis adı)</li>
+                <li>description (Detaylı açıklama)</li>
+                <li>anonymity (Anonimlik seviyesi: Low/Medium/High)</li>
+            </ul>
+        </li>
+        <li>usage_type (IP kullanım tipi)
+            <ul>
+                <li>COM - Ticari kullanım</li>
+                <li>ORG - Organizasyon</li>
+                <li>GOV - Devlet kurumu</li>
+                <li>MIL - Askeri kurum</li>
+                <li>EDU - Eğitim kurumu</li>
+                <li>LIB - Kütüphane</li>
+                <li>CDN - İçerik dağıtım ağı</li>
+                <li>ISP - Internet servis sağlayıcı</li>
+                <li>MOB - Mobil operatör</li>
+                <li>DCH - Veri merkezi/Hosting</li>
+                <li>SES - Arama motoru</li>
+                <li>RSV - Rezerve edilmiş</li>
+            </ul>
+        </li>
+        <li>fraud_score (Dolandırıcılık riski skoru, 0-99 arası)</li>
+    </ul>
+</li>";
+echo "<li><code>security_checks</code> - Güvenlik kontrolleri
+    <ul>
+        <li>is_proxy (Proxy kullanımı)</li>
+        <li>is_vpn (VPN kullanımı)</li>
+        <li>is_tor (Tor kullanımı)</li>
+        <li>is_datacenter (Datacenter IP)</li>
+        <li>threat_score (Tehdit skoru)</li>
+        <li>abuse_confidence_score (Kötüye kullanım güven skoru)</li>
+    </ul>
+</li>";
+echo "<li><code>device_info</code> - Cihaz bilgileri
+    <ul>
+        <li>type (cihaz tipi)</li>
+        <li>brand (marka)</li>
+        <li>model (model)</li>
+        <li>is_mobile/is_tablet/is_desktop (cihaz türü)</li>
+    </ul>
+</li>";
+echo "<li><code>browser_info</code> - Tarayıcı bilgileri</li>";
+echo "<li><code>operating_system</code> - İşletim sistemi bilgileri</li>";
+echo "<li><code>language_info</code> - Dil bilgileri</li>";
+echo "<li><code>risk_assessment</code> - Risk değerlendirmesi</li>";
+echo "<li><code>cached</code> - Önbellekten mi geldi?</li>";
 echo "</ul>";
 
 // Örnek Kullanımlar
@@ -78,6 +148,7 @@ echo htmlspecialchars('{
     "success": true,
     "data": {
         "ip": "8.8.8.8",
+        "timestamp": 1707242486,
         "location": {
             "country": {
                 "name": "United States",
@@ -93,29 +164,82 @@ echo htmlspecialchars('{
             "location": {
                 "latitude": 37.4223,
                 "longitude": -122.0847
-            },
-            "isp": "Google LLC",
-            "timezone": "America/Los_Angeles"
+            }
         },
-        "browser": {
-            "name": "Chrome",
-            "version": "121",
-            "user_agent": "Mozilla/5.0 ..."
+        "network_info": {
+            "is_datacenter": true,
+            "is_isp": false,
+            "asn_info": {
+                "asn": "AS15169",
+                "organization": "Google LLC",
+                "isp": "Google LLC"
+            }
         },
-        "language": {
-            "code": "en-US",
-            "name": "English"
-        },
-        "security": {
-            "risk_level": "LOW",
-            "risk_score": 0,
+        "security_checks": {
             "is_proxy": false,
             "is_vpn": false,
-            "is_tor": false
+            "is_tor": false,
+            "is_datacenter": true,
+            "threat_score": 0,
+            "abuse_confidence_score": 0
+        },
+        "device_info": {
+            "type": "desktop",
+            "brand": "Unknown",
+            "model": "Unknown",
+            "is_mobile": false,
+            "is_tablet": false,
+            "is_desktop": true
+        },
+        "browser_info": {
+            "name": "Chrome",
+            "version": "121",
+            "platform": "Windows",
+            "user_agent": "Mozilla/5.0 ...",
+            "features": {
+                "cookies_enabled": true,
+                "javascript_enabled": true,
+                "language": "tr-TR",
+                "do_not_track": "0"
+            }
+        },
+        "operating_system": {
+            "name": "Windows 11",
+            "version": "NT 11.0",
+            "architecture": "x64"
+        },
+        "language_info": {
+            "primary": {
+                "code": "tr-TR",
+                "name": "Türkçe",
+                "priority": 1.0
+            },
+            "all": [
+                {
+                    "code": "tr-TR",
+                    "name": "Türkçe",
+                    "priority": 1.0
+                },
+                {
+                    "code": "en-US",
+                    "name": "English",
+                    "priority": 0.8
+                }
+            ]
+        },
+        "risk_assessment": {
+            "risk_factors": {
+                "geolocation_risk": 0,
+                "proxy_risk": 0,
+                "behavior_risk": 0,
+                "reputation_risk": 0
+            },
+            "total_risk_score": 0,
+            "risk_level": "LOW",
+            "recommendations": []
         },
         "cached": true
-    },
-    "timestamp": 1707242486
+    }
 }', ENT_QUOTES);
 echo "</pre>";
 
@@ -136,6 +260,11 @@ echo "<li>API yanıtları JSON formatındadır</li>";
 echo "<li>Başarılı yanıtlarda HTTP 200 kodu döner</li>";
 echo "<li>Hata durumunda HTTP 500 kodu döner</li>";
 echo "<li>Cache sistemi varsayılan olarak aktiftir (1 saat)</li>";
+echo "<li>Network bilgileri (datacenter/ISP) gerçek zamanlı olarak kontrol edilir</li>";
+echo "<li>ASN bilgileri ip-api.com servisinden alınır</li>";
+echo "<li>Datacenter ve ISP tespiti için geniş bir veritabanı kullanılır</li>";
+echo "<li>Proxy tipleri ve kullanım tipleri IP2Location veritabanı standartlarına göre sınıflandırılır</li>";
+echo "<li>Fraud Score hesaplaması proxy, VPN, Tor ve tehdit skorlarına göre yapılır (0-99)</li>";
 echo "</ul>";
 
 echo "</div>";

@@ -76,7 +76,15 @@ class IPSecurityLibrary {
             'screen_info' => $this->getScreenInfo(),
             'language_info' => $this->getClientLanguage(),
             'timezone_info' => $this->getClientTimezone(),
-            'operating_system' => $this->getOperatingSystem()
+            'operating_system' => $this->getOperatingSystem(),
+            'network_info' => [
+                'is_datacenter' => $this->isDatacenter($ip),
+                'is_isp' => $this->isISP($ip),
+                'asn_info' => $this->getASNInfo($ip),
+                'proxy_type' => $this->getProxyType($ip),
+                'usage_type' => $this->getUsageType($ip),
+                'fraud_score' => $this->getFraudScore($ip)
+            ]
         ];
         
         // Sonuçları cache'le
@@ -914,8 +922,192 @@ class IPSecurityLibrary {
     }
 
     private function isDatacenter(string $ip): bool {
-        // Datacenter IP kontrolü
-        return false; // Şimdilik varsayılan olarak false döndürüyoruz
+        // Datacenter IP aralıkları ve belirteçleri
+        $datacenterPatterns = [
+            // Amazon AWS
+            '/^(13\.32\.0\.0|13\.33\.0\.0|13\.34\.0\.0|13\.35\.0\.0|52\.92\.0\.0|52\.93\.0\.0|52\.94\.0\.0|52\.95\.0\.0|54\.230\.0\.0|54\.231\.0\.0|54\.239\.0\.0|54\.240\.0\.0|204\.246\.0\.0|205\.251\.192\.0|205\.251\.224\.0|205\.251\.240\.0|205\.251\.244\.0|205\.251\.247\.0|205\.251\.248\.0|207\.171\.160\.0|207\.171\.176\.0|216\.137\.32\.0|216\.182\.224\.0|216\.182\.232\.0|216\.182\.236\.0|216\.182\.238\.0)/',
+            
+            // Google Cloud
+            '/^(34\.64\.0\.0|34\.65\.0\.0|34\.66\.0\.0|34\.67\.0\.0|34\.68\.0\.0|34\.69\.0\.0|34\.70\.0\.0|34\.71\.0\.0|34\.72\.0\.0|34\.73\.0\.0|34\.74\.0\.0|34\.75\.0\.0|34\.76\.0\.0|34\.77\.0\.0|34\.78\.0\.0|34\.79\.0\.0|34\.80\.0\.0|34\.81\.0\.0|34\.82\.0\.0|34\.83\.0\.0|34\.84\.0\.0|34\.85\.0\.0|34\.86\.0\.0|34\.87\.0\.0|34\.88\.0\.0|34\.89\.0\.0|34\.90\.0\.0|34\.91\.0\.0|34\.92\.0\.0|34\.93\.0\.0|34\.94\.0\.0|34\.95\.0\.0|34\.96\.0\.0|34\.97\.0\.0|34\.98\.0\.0|34\.99\.0\.0|34\.100\.0\.0|34\.101\.0\.0|34\.102\.0\.0|34\.103\.0\.0|34\.104\.0\.0)/',
+            
+            // Microsoft Azure
+            '/^(13\.64\.0\.0|13\.65\.0\.0|13\.66\.0\.0|13\.67\.0\.0|13\.68\.0\.0|13\.69\.0\.0|13\.70\.0\.0|13\.71\.0\.0|13\.72\.0\.0|13\.73\.0\.0|13\.74\.0\.0|13\.75\.0\.0|13\.76\.0\.0|13\.77\.0\.0|13\.78\.0\.0|13\.79\.0\.0|13\.80\.0\.0|13\.81\.0\.0|13\.82\.0\.0|13\.83\.0\.0|13\.84\.0\.0|13\.85\.0\.0|13\.86\.0\.0|13\.87\.0\.0|13\.88\.0\.0|13\.89\.0\.0|13\.90\.0\.0|13\.91\.0\.0|13\.92\.0\.0|13\.93\.0\.0)/',
+            
+            // DigitalOcean
+            '/^(45\.55\.0\.0|45\.56\.0\.0|45\.57\.0\.0|45\.58\.0\.0|45\.59\.0\.0|45\.60\.0\.0|45\.61\.0\.0|45\.62\.0\.0|45\.63\.0\.0|45\.64\.0\.0|45\.65\.0\.0|45\.66\.0\.0|45\.67\.0\.0|45\.68\.0\.0|45\.69\.0\.0|45\.70\.0\.0|45\.71\.0\.0|45\.72\.0\.0|45\.73\.0\.0|45\.74\.0\.0|45\.75\.0\.0|45\.76\.0\.0|45\.77\.0\.0|45\.78\.0\.0|45\.79\.0\.0)/',
+            
+            // Linode
+            '/^(23\.239\.0\.0|45\.33\.0\.0|45\.56\.64\.0|45\.79\.0\.0|50\.116\.0\.0|66\.175\.208\.0|66\.228\.32\.0|69\.164\.192\.0|72\.14\.176\.0|74\.207\.224\.0|96\.126\.96\.0|97\.107\.128\.0|104\.200\.16\.0|104\.237\.128\.0|106\.187\.0\.0|108\.170\.48\.0|109\.74\.192\.0|139\.162\.0\.0|173\.230\.128\.0|173\.255\.192\.0|178\.79\.128\.0|188\.165\.192\.0|188\.166\.0\.0|192\.155\.80\.0|192\.157\.208\.0|198\.58\.96\.0|198\.74\.48\.0|207\.192\.68\.0|207\.192\.69\.0|207\.192\.70\.0|207\.192\.71\.0|209\.123\.234\.0|213\.52\.128\.0|213\.52\.129\.0|213\.52\.130\.0|213\.52\.131\.0|213\.52\.132\.0|213\.52\.133\.0|213\.52\.134\.0|213\.52\.135\.0)/',
+            
+            // OVH
+            '/^(37\.187\.0\.0|46\.105\.0\.0|51\.254\.0\.0|51\.255\.0\.0|137\.74\.0\.0|141\.94\.0\.0|141\.95\.0\.0|142\.44\.128\.0|144\.217\.0\.0|147\.135\.0\.0|149\.56\.0\.0|151\.80\.0\.0|158\.69\.0\.0|164\.132\.0\.0|167\.114\.0\.0|176\.31\.0\.0|178\.32\.0\.0|185\.12\.64\.0|185\.45\.160\.0|188\.165\.0\.0|192\.95\.0\.0|192\.99\.0\.0|193\.70\.0\.0|198\.27\.64\.0|198\.50\.128\.0|213\.186\.32\.0|213\.251\.128\.0|217\.182\.0\.0)/',
+            
+            // Hetzner
+            '/^(5\.9\.0\.0|31\.172\.128\.0|37\.221\.192\.0|46\.4\.0\.0|78\.46\.0\.0|85\.10\.192\.0|88\.198\.0\.0|91\.198\.141\.0|91\.198\.142\.0|91\.198\.143\.0|91\.198\.144\.0|91\.198\.145\.0|91\.198\.146\.0|91\.198\.147\.0|91\.198\.148\.0|91\.198\.149\.0|91\.198\.150\.0|91\.198\.151\.0|91\.198\.152\.0|91\.198\.153\.0|91\.198\.154\.0|91\.198\.155\.0|91\.198\.156\.0|91\.198\.157\.0|91\.198\.158\.0|91\.198\.159\.0|91\.198\.160\.0|91\.198\.161\.0|91\.198\.162\.0|91\.198\.163\.0|91\.198\.164\.0|91\.198\.165\.0|91\.198\.166\.0|91\.198\.167\.0|91\.198\.168\.0|91\.198\.169\.0|91\.198\.170\.0|91\.198\.171\.0|91\.198\.172\.0|91\.198\.173\.0|91\.198\.174\.0|91\.198\.175\.0|91\.198\.176\.0|91\.198\.177\.0|91\.198\.178\.0|91\.198\.179\.0|91\.198\.180\.0|91\.198\.181\.0|91\.198\.182\.0|91\.198\.183\.0|91\.198\.184\.0|91\.198\.185\.0|91\.198\.186\.0|91\.198\.187\.0|91\.198\.188\.0|91\.198\.189\.0|91\.198\.190\.0|91\.198\.191\.0)/',
+            
+            // Vultr
+            '/^(45\.32\.0\.0|45\.63\.0\.0|66\.42\.32\.0|104\.156\.224\.0|104\.207\.144\.0|107\.191\.32\.0|108\.61\.0\.0|149\.28\.0\.0|155\.138\.128\.0|155\.138\.192\.0|155\.138\.224\.0|155\.138\.240\.0|155\.138\.248\.0|155\.138\.252\.0|155\.138\.254\.0|155\.138\.255\.0|207\.148\.0\.0|207\.246\.64\.0|207\.246\.96\.0|207\.246\.112\.0|207\.246\.120\.0|207\.246\.124\.0|207\.246\.126\.0|207\.246\.127\.0|208\.167\.224\.0|208\.167\.232\.0|208\.167\.236\.0|208\.167\.238\.0|208\.167\.239\.0|45\.77\.0\.0|45\.76\.0\.0|45\.32\.0\.0|104\.238\.128\.0|104\.238\.160\.0|104\.238\.176\.0|104\.238\.184\.0|104\.238\.188\.0|104\.238\.190\.0|104\.238\.191\.0)/'
+        ];
+        
+        // IP adresini noktalı ondalık formatından long'a çevir
+        $ipLong = ip2long($ip);
+        if ($ipLong === false) {
+            return false;
+        }
+        
+        // Datacenter IP aralıklarını kontrol et
+        foreach ($datacenterPatterns as $pattern) {
+            if (preg_match($pattern, $ip)) {
+                return true;
+            }
+        }
+        
+        // ASN kontrolü (Autonomous System Number)
+        $asnInfo = $this->getASNInfo($ip);
+        if ($asnInfo) {
+            // Bilinen datacenter ASN'lerini kontrol et
+            $datacenterASNs = [
+                'AS16509', // Amazon AWS
+                'AS14618', // Amazon AWS
+                'AS15169', // Google Cloud
+                'AS8075',  // Microsoft Azure
+                'AS14061', // DigitalOcean
+                'AS63949', // Linode
+                'AS16276', // OVH
+                'AS24940', // Hetzner
+                'AS20473', // Vultr
+                'AS13335', // Cloudflare
+                'AS396982', // Google Cloud
+                'AS26496', // GoDaddy
+                'AS29873', // Rackspace
+                'AS16276', // OVH
+                'AS12876', // Online SAS
+                'AS31898', // Oracle Cloud
+                'AS45102', // Alibaba Cloud
+                'AS37963', // Alibaba Cloud
+                'AS45090', // Tencent Cloud
+                'AS38365', // Baidu Cloud
+                'AS4134',  // Chinanet
+                'AS4837',  // China Unicom
+                'AS9808',  // China Mobile
+                'AS4538',  // China Education and Research Network
+                'AS17621', // China Unicom
+                'AS4812',  // China Telecom
+                'AS9394',  // China Railway Telecom
+                'AS4847',  // China Networks Inter-Exchange
+                'AS9929',  // China Netcom
+                'AS9308',  // Abitcool China Inc.
+            ];
+            
+            if (in_array($asnInfo['asn'], $datacenterASNs)) {
+                return true;
+            }
+            
+            // ASN organizasyon adında datacenter belirteçlerini kontrol et
+            $datacenterKeywords = [
+                'hosting', 'cloud', 'datacenter', 'data center', 'server', 'vps', 'virtual', 
+                'dedicated', 'managed', 'colocation', 'wholesale', 'infrastructure', 'platform',
+                'aws', 'azure', 'google', 'alibaba', 'tencent', 'baidu', 'oracle', 'ibm', 
+                'digitalocean', 'linode', 'vultr', 'ovh', 'hetzner', 'scaleway', 'rackspace'
+            ];
+            
+            foreach ($datacenterKeywords as $keyword) {
+                if (stripos($asnInfo['organization'], $keyword) !== false) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    private function getASNInfo(string $ip): ?array {
+        try {
+            // WHOIS veya IP-API gibi servislerden ASN bilgisini al
+            $url = "http://ip-api.com/json/{$ip}?fields=as,org,isp";
+            $response = @file_get_contents($url);
+            
+            if ($response === false) {
+                return null;
+            }
+            
+            $data = json_decode($response, true);
+            if (!$data) {
+                return null;
+            }
+            
+            // AS numarasını parse et (örnek format: "AS15169 Google LLC")
+            $asn = '';
+            if (preg_match('/^AS(\d+)\s/', $data['as'] ?? '', $matches)) {
+                $asn = 'AS' . $matches[1];
+            }
+            
+            return [
+                'asn' => $asn,
+                'organization' => $data['org'] ?? '',
+                'isp' => $data['isp'] ?? ''
+            ];
+        } catch (\Exception $e) {
+            $this->logError('ASN Info Error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    private function isISP(string $ip): bool {
+        // Önce datacenter kontrolü yap
+        if ($this->isDatacenter($ip)) {
+            return false;
+        }
+        
+        // ASN bilgisini al
+        $asnInfo = $this->getASNInfo($ip);
+        if (!$asnInfo) {
+            return false;
+        }
+        
+        // ISP belirteçlerini kontrol et
+        $ispKeywords = [
+            'telecom', 'telekom', 'communications', 'broadband', 'isp', 'internet service provider',
+            'mobile', 'wireless', 'cellular', 'cable', 'fiber', 'dsl', 'network', 'internet',
+            'telco', 'provider', 'communication', 'telefonica', 'vodafone', 'verizon', 'at&t',
+            'comcast', 'sprint', 't-mobile', 'orange', 'telefonica', 'mtn', 'etisalat', 'airtel',
+            'turkcell', 'turk telekom', 'superonline', 'ttnet', 'vodafone', 'turknet'
+        ];
+        
+        foreach ($ispKeywords as $keyword) {
+            if (stripos($asnInfo['organization'], $keyword) !== false || 
+                stripos($asnInfo['isp'], $keyword) !== false) {
+                return true;
+            }
+        }
+        
+        // Bilinen ISP ASN'lerini kontrol et
+        $ispASNs = [
+            'AS4809',  // China Telecom
+            'AS7018',  // AT&T
+            'AS3320',  // Deutsche Telekom
+            'AS3215',  // Orange
+            'AS2856',  // British Telecom
+            'AS6147',  // Telefonica
+            'AS3303',  // Swisscom
+            'AS1221',  // Telstra
+            'AS4134',  // Chinanet
+            'AS20115', // Charter Communications
+            'AS7922',  // Comcast
+            'AS701',   // Verizon
+            'AS6328',  // Shaw Communications
+            'AS5089',  // Virgin Media
+            'AS9121',  // Turk Telekom
+            'AS34984', // Turkcell
+            'AS47331', // TurkNet
+            'AS15897', // Vodafone Turkey
+            'AS8386',  // Vodafone Turkey
+            'AS16135', // Turkcell Superonline
+            'AS34984', // Tellcom (Turkcell)
+            'AS9121',  // TTNet
+        ];
+        
+        return in_array($asnInfo['asn'], $ispASNs);
     }
 
     private function calculateThreatScore(string $ip): float {
@@ -1041,6 +1233,139 @@ class IPSecurityLibrary {
         }
         
         return '🏳️'; // Bilinmeyen ülke için beyaz bayrak
+    }
+
+    private function getProxyType(string $ip): ?array {
+        $proxyTypes = [
+            'VPN' => [
+                'name' => 'Virtual Private Network',
+                'description' => 'IP kullanıcının gerçek IP adresini gizlemek için VPN servisi kullanıyor',
+                'anonymity' => 'High'
+            ],
+            'TOR' => [
+                'name' => 'Tor Exit Node',
+                'description' => 'IP adresi Tor ağının çıkış noktası olarak kullanılıyor',
+                'anonymity' => 'High'
+            ],
+            'DCH' => [
+                'name' => 'Data Center/Hosting',
+                'description' => 'IP adresi bir veri merkezi veya hosting sağlayıcıya ait',
+                'anonymity' => 'Low'
+            ],
+            'PUB' => [
+                'name' => 'Public Proxy',
+                'description' => 'Halka açık proxy sunucusu olarak kullanılıyor',
+                'anonymity' => 'High'
+            ],
+            'WEB' => [
+                'name' => 'Web Proxy',
+                'description' => 'Web tabanlı proxy servisi olarak kullanılıyor',
+                'anonymity' => 'High'
+            ],
+            'SES' => [
+                'name' => 'Search Engine Spider',
+                'description' => 'Arama motoru robotu veya crawler olarak kullanılıyor',
+                'anonymity' => 'Low'
+            ],
+            'RES' => [
+                'name' => 'Residential Proxy',
+                'description' => 'Ev kullanıcılarının IP adreslerini proxy olarak kullanan servis',
+                'anonymity' => 'Medium'
+            ],
+            'CPN' => [
+                'name' => 'Consumer Privacy Network',
+                'description' => 'Tüketici gizlilik ağı olarak kullanılıyor',
+                'anonymity' => 'Low'
+            ],
+            'EPN' => [
+                'name' => 'Enterprise Private Network',
+                'description' => 'Kurumsal özel ağ olarak kullanılıyor',
+                'anonymity' => 'Low'
+            ]
+        ];
+
+        if ($this->isVPN($ip)) {
+            return $proxyTypes['VPN'];
+        } elseif ($this->isTorExit($ip)) {
+            return $proxyTypes['TOR'];
+        } elseif ($this->isDatacenter($ip)) {
+            return $proxyTypes['DCH'];
+        } elseif ($this->isProxy($ip)) {
+            return $proxyTypes['PUB'];
+        }
+
+        return null;
+    }
+
+    private function getUsageType(string $ip): string {
+        $usageTypes = [
+            'COM' => 'Commercial',
+            'ORG' => 'Organization',
+            'GOV' => 'Government',
+            'MIL' => 'Military',
+            'EDU' => 'University/College/School',
+            'LIB' => 'Library',
+            'CDN' => 'Content Delivery Network',
+            'ISP' => 'Fixed Line ISP',
+            'MOB' => 'Mobile ISP',
+            'DCH' => 'Data Center/Web Hosting/Transit',
+            'SES' => 'Search Engine Spider',
+            'RSV' => 'Reserved'
+        ];
+
+        $asnInfo = $this->getASNInfo($ip);
+        if (!$asnInfo) {
+            return 'Unknown';
+        }
+
+        // ASN ve organizasyon bilgisine göre kullanım tipini belirle
+        if (stripos($asnInfo['organization'], 'isp') !== false || 
+            stripos($asnInfo['organization'], 'telecom') !== false) {
+            return $usageTypes['ISP'];
+        } elseif ($this->isDatacenter($ip)) {
+            return $usageTypes['DCH'];
+        } elseif (stripos($asnInfo['organization'], 'government') !== false) {
+            return $usageTypes['GOV'];
+        } elseif (stripos($asnInfo['organization'], 'university') !== false || 
+                  stripos($asnInfo['organization'], 'edu') !== false) {
+            return $usageTypes['EDU'];
+        } elseif (stripos($asnInfo['organization'], 'cdn') !== false) {
+            return $usageTypes['CDN'];
+        }
+
+        return $usageTypes['COM'];
+    }
+
+    private function getFraudScore(string $ip): int {
+        $score = 0;
+        
+        // Proxy kullanımı
+        if ($this->isProxy($ip)) {
+            $score += 30;
+        }
+        
+        // VPN kullanımı
+        if ($this->isVPN($ip)) {
+            $score += 20;
+        }
+        
+        // Tor kullanımı
+        if ($this->isTorExit($ip)) {
+            $score += 40;
+        }
+        
+        // Datacenter IP
+        if ($this->isDatacenter($ip)) {
+            $score += 10;
+        }
+        
+        // Tehdit skoru
+        $score += min(($this->calculateThreatScore($ip) * 10), 30);
+        
+        // Kötüye kullanım güven skoru
+        $score += min(($this->getAbuseConfidenceScore($ip) * 10), 20);
+        
+        return min($score, 99);
     }
 }
 
