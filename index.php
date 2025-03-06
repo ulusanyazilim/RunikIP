@@ -148,7 +148,7 @@ echo htmlspecialchars('{
     "success": true,
     "data": {
         "ip": "8.8.8.8",
-        "timestamp": 1707242486,
+        "timestamp": "2024-02-07 15:30:45",
         "location": {
             "country": {
                 "name": "United States",
@@ -159,12 +159,7 @@ echo htmlspecialchars('{
                 "name": "California",
                 "code": "CA"
             },
-            "city": "Mountain View",
-            "postal_code": "94043",
-            "location": {
-                "latitude": 37.4223,
-                "longitude": -122.0847
-            }
+            "city": "Mountain View"
         },
         "network_info": {
             "is_datacenter": true,
@@ -173,15 +168,14 @@ echo htmlspecialchars('{
                 "asn": "AS15169",
                 "organization": "Google LLC",
                 "isp": "Google LLC"
-            }
-        },
-        "security_checks": {
-            "is_proxy": false,
-            "is_vpn": false,
-            "is_tor": false,
-            "is_datacenter": true,
-            "threat_score": 0,
-            "abuse_confidence_score": 0
+            },
+            "proxy_type": {
+                "name": "Data Center/Hosting",
+                "description": "IP adresi bir veri merkezi veya hosting sağlayıcıya ait",
+                "anonymity": "Low"
+            },
+            "usage_type": "DCH",
+            "fraud_score": 10
         },
         "device_info": {
             "type": "desktop",
@@ -191,11 +185,15 @@ echo htmlspecialchars('{
             "is_tablet": false,
             "is_desktop": true
         },
-        "browser_info": {
+        "operating_system": {
+            "name": "Windows",
+            "version": "11",
+            "architecture": "x64"
+        },
+        "browser": {
             "name": "Chrome",
             "version": "121",
-            "platform": "Windows",
-            "user_agent": "Mozilla/5.0 ...",
+            "user_agent": "Mozilla/5.0...",
             "features": {
                 "cookies_enabled": true,
                 "javascript_enabled": true,
@@ -203,43 +201,36 @@ echo htmlspecialchars('{
                 "do_not_track": "0"
             }
         },
-        "operating_system": {
-            "name": "Windows 11",
-            "version": "NT 11.0",
-            "architecture": "x64"
-        },
-        "language_info": {
-            "primary": {
-                "code": "tr-TR",
-                "name": "Türkçe",
-                "priority": 1.0
-            },
+        "language": {
+            "code": "tr-TR",
+            "name": "Türkçe",
             "all": [
                 {
                     "code": "tr-TR",
                     "name": "Türkçe",
                     "priority": 1.0
-                },
-                {
-                    "code": "en-US",
-                    "name": "English",
-                    "priority": 0.8
                 }
             ]
         },
-        "risk_assessment": {
+        "security": {
+            "risk_level": "LOW",
+            "risk_score": 10,
             "risk_factors": {
                 "geolocation_risk": 0,
                 "proxy_risk": 0,
                 "behavior_risk": 0,
                 "reputation_risk": 0
             },
-            "total_risk_score": 0,
-            "risk_level": "LOW",
-            "recommendations": []
+            "recommendations": [],
+            "is_proxy": false,
+            "is_vpn": false,
+            "is_tor": false,
+            "threat_score": 0,
+            "abuse_confidence_score": 0
         },
         "cached": true
-    }
+    },
+    "timestamp": 1707242486
 }', ENT_QUOTES);
 echo "</pre>";
 
