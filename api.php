@@ -1,12 +1,13 @@
 <?php
-require_once 'SimpleCache.php';
+header('Content-Type: application/json; charset=utf-8');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, POST');
+header('Access-Control-Allow-Headers: Content-Type');
+
 require_once 'IPSecurityLibrary.php';
+require_once 'SimpleCache.php';
 
 use Security\IPSecurityLibrary;
-
-// CORS başlıkları (gerekirse)
-header('Access-Control-Allow-Origin: *');
-header('Content-Type: application/json; charset=utf-8');
 
 // Log klasörünü kontrol et ve oluştur
 $logDir = 'logs';
@@ -15,67 +16,147 @@ if (!is_dir($logDir)) {
 }
 
 try {
+    // IP adresi parametresini al
+    $ip = $_GET['ip'] ?? null;
+    
+    // IP adresi kontrolü
+    if ($ip === null || !filter_var($ip, FILTER_VALIDATE_IP)) {
+        http_response_code(400); // Bad Request
+        echo json_encode([
+            'success' => false,
+            'message' => 'Geçersiz veya eksik IP adresi.',
+            'code' => 400
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        exit; // Hata durumunda işlemi sonlandır
+    }
+    
+    // API anahtarı kontrolü (isteğe bağlı)
+    $apiKey = $_GET['api_key'] ?? null;
+    if ($apiKey !== null && $apiKey !== 'YOUR_API_KEY') {
+        throw new Exception('Geçersiz API anahtarı', 403);
+    }
+    
+    // Konfigürasyon
     $config = [
         'cache_enabled' => true,
         'geolocation_provider' => 'ip-api',
-        'log_enabled' => true
+        'log_enabled' => true,
+        'log_path' => 'security_logs/',
+        'proxy_check_enabled' => true,
+        'tor_check_enabled' => true,
+        'vpn_check_enabled' => true,
+        'asn_database_path' => 'databases/IP2LOCATION-LITE-ASN.CSV',
+        'datacenter_database_path' => 'databases/IP2LOCATION-DATACENTER.CSV',
+        'ip2location_enabled' => true,
+        'risk_threshold' => [
+            'low' => 2,
+            'medium' => 0,
+            'high' => -2
+        ],
+        'api_keys' => [
+            'maxmind' => '',
+            'ipqualityscore' => '',
+            'proxycheck' => ''
+        ]
     ];
     
-    $security = IPSecurityLibrary::getInstance($config);
+    // IP Güvenlik Kütüphanesini başlat
+    $ipSecurity = IPSecurityLibrary::getInstance($config);
     
-    // IP parametresi varsa onu kullan, yoksa ziyaretçinin IP'sini al
-    $ip = $_GET['ip'] ?? null;
-    $analysis = $security->analyzeIP($ip);
+    // IP analizini gerçekleştir
+    $result = $ipSecurity->analyzeIP($ip);
+    
+    // IP Location verilerini al
+    $ipLocationData = $ipSecurity->getIPLocationData($ip);
     
     // Sadece gerekli bilgileri içeren array oluştur
     $response = [
         'success' => true,
         'data' => [
-            'ip' => $analysis['ip'],
+            'ip' => $result['ip'],
             'timestamp' => date('Y-m-d H:i:s'),
-            'location' => $analysis['geolocation'] ?? null,
+            'location' => $result['geolocation'] ?? null,
             'network_info' => [
-                'is_datacenter' => $analysis['network_info']['is_datacenter'] ?? false,
-                'is_isp' => $analysis['network_info']['is_isp'] ?? false,
-                'asn_info' => $analysis['network_info']['asn_info'] ?? null,
-                'proxy_type' => $analysis['network_info']['proxy_type'] ?? null,
-                'usage_type' => $analysis['network_info']['usage_type'] ?? null,
-                'fraud_score' => $analysis['network_info']['fraud_score'] ?? 0
+                'is_datacenter' => $result['network_info']['is_datacenter'] ?? false,
+                'is_isp' => $result['network_info']['is_isp'] ?? false,
+                'asn_info' => $result['network_info']['asn_info'] ?? null,
+                'proxy_type' => $result['network_info']['proxy_type'] ?? null,
+                'usage_type' => $result['network_info']['usage_type'] ?? null,
+                'fraud_score' => $result['network_info']['fraud_score'] ?? 0,
+                'ip_location' => [
+                    'is_proxy' => $ipLocationData['is_proxy'] ?? false,
+                    'is_datacenter' => $ipLocationData['is_datacenter'] ?? false,
+                    'is_vpn' => $ipLocationData['is_vpn'] ?? false,
+                    'is_tor' => $ipLocationData['is_tor'] ?? false,
+                    'is_mobile' => $ipLocationData['is_mobile'] ?? false,
+                    'is_satellite' => $ipLocationData['is_satellite'] ?? false,
+                    'company_type' => $ipLocationData['company_type'] ?? null,
+                    'source' => $ipLocationData['source'] ?? null,
+                    'country' => $ipLocationData['country'] ?? null,
+                    'country_code' => $ipLocationData['country_code'] ?? null,
+                    'region' => $ipLocationData['region'] ?? null,
+                    'city' => $ipLocationData['city'] ?? null,
+                    'isp' => $ipLocationData['isp'] ?? null,
+                    'org_name' => $ipLocationData['org_name'] ?? null,
+                    'as_no' => $ipLocationData['as_no'] ?? null,
+                    'postal_code' => $ipLocationData['postal_code'] ?? null,
+                    'latitude' => $ipLocationData['latitude'] ?? null,
+                    'longitude' => $ipLocationData['longitude'] ?? null,
+                    'abuse_score' => $ipLocationData['abuse_score'] ?? null,
+                    'asn_abuse_score' => $ipLocationData['asn_abuse_score'] ?? null,
+                    'connection_type' => $ipLocationData['connection_type'] ?? null,
+                    'proxy_type' => $ipLocationData['proxy_type'] ?? null,
+                    'threat_level' => $ipLocationData['threat_level'] ?? null,
+                    'threat_types' => $ipLocationData['threat_types'] ?? [],
+                    'confidence_score' => $ipLocationData['confidence_score'] ?? null,
+                    'net_speed' => $ipLocationData['net_speed'] ?? null,
+                    'area_code' => $ipLocationData['area_code'] ?? null,
+                    'idd_code' => $ipLocationData['idd_code'] ?? null,
+                    'mobile_brand' => $ipLocationData['mobile_brand'] ?? null,
+                    'mcc' => $ipLocationData['mcc'] ?? null,
+                    'mnc' => $ipLocationData['mnc'] ?? null,
+                    'time_zone' => $ipLocationData['time_zone'] ?? null,
+                    'weather_station_code' => $ipLocationData['weather_station_code'] ?? null,
+                    'weather_station_name' => $ipLocationData['weather_station_name'] ?? null,
+                    'elevation' => $ipLocationData['elevation'] ?? null,
+                    'address_type' => $ipLocationData['address_type'] ?? null,
+                    'category' => $ipLocationData['category'] ?? null,
+                    'domain' => $ipLocationData['domain'] ?? null
+                ]
             ],
             'device_info' => [
-                'type' => $analysis['device_info']['type'] ?? 'Unknown',
-                'brand' => $analysis['device_info']['brand'] ?? 'Unknown',
-                'model' => $analysis['device_info']['model'] ?? 'Unknown',
-                'is_mobile' => $analysis['device_info']['is_mobile'] ?? false,
-                'is_tablet' => $analysis['device_info']['is_tablet'] ?? false,
-                'is_desktop' => $analysis['device_info']['is_desktop'] ?? false
+                'type' => $result['device_info']['type'] ?? 'Unknown',
+                'brand' => $result['device_info']['brand'] ?? 'Unknown',
+                'model' => $result['device_info']['model'] ?? 'Unknown',
+                'is_mobile' => $result['device_info']['is_mobile'] ?? false,
+                'is_tablet' => $result['device_info']['is_tablet'] ?? false,
+                'is_desktop' => $result['device_info']['is_desktop'] ?? false
             ],
             'operating_system' => [
-                'name' => $analysis['operating_system']['name'] ?? 'Unknown',
-                'version' => $analysis['operating_system']['version'] ?? 'Unknown',
-                'architecture' => $analysis['operating_system']['architecture'] ?? 'Unknown'
+                'name' => $result['operating_system']['name'] ?? 'Unknown',
+                'version' => $result['operating_system']['version'] ?? 'Unknown',
+                'architecture' => $result['operating_system']['architecture'] ?? 'Unknown'
             ],
             'browser' => [
-                'name' => $analysis['browser_info']['name'] ?? 'Unknown',
-                'version' => $analysis['browser_info']['version'] ?? 'Unknown',
-                'user_agent' => $analysis['browser_info']['user_agent'] ?? 'Unknown',
-                'features' => $analysis['browser_info']['features'] ?? []
+                'name' => $result['browser_info']['name'] ?? 'Unknown',
+                'version' => $result['browser_info']['version'] ?? 'Unknown',
+                'user_agent' => $result['browser_info']['user_agent'] ?? 'Unknown',
+                'features' => $result['browser_info']['features'] ?? []
             ],
             'language' => [
-                'code' => $analysis['language_info']['primary']['code'] ?? 'Unknown',
-                'name' => $analysis['language_info']['primary']['name'] ?? 'Unknown',
-                'all' => $analysis['language_info']['all'] ?? []
+                'code' => $result['language_info']['primary']['code'] ?? 'Unknown',
+                'name' => $result['language_info']['primary']['name'] ?? 'Unknown',
+                'all' => $result['language_info']['all'] ?? []
             ],
             'security' => [
-                'risk_level' => $analysis['risk_assessment']['risk_level'],
-                'risk_score' => $analysis['risk_assessment']['total_risk_score'],
-                'risk_factors' => $analysis['risk_assessment']['risk_factors'] ?? [],
-                'recommendations' => $analysis['risk_assessment']['recommendations'] ?? [],
-                'is_proxy' => $analysis['security_checks']['is_proxy'] ?? false,
-                'is_vpn' => $analysis['security_checks']['is_vpn'] ?? false,
-                'is_tor' => $analysis['security_checks']['is_tor'] ?? false,
-                'threat_score' => $analysis['security_checks']['threat_score'] ?? 0,
-                'abuse_confidence_score' => $analysis['security_checks']['abuse_confidence_score'] ?? 0
+                'risk_level' => $result['risk_assessment']['level'] ?? 'unknown',
+                'risk_score' => $result['risk_assessment']['score'] ?? 0,
+                'risk_factors' => $result['risk_assessment']['factors'] ?? [],
+                'is_proxy' => $result['security_checks']['is_proxy'] ?? false,
+                'is_vpn' => $result['security_checks']['is_vpn'] ?? false,
+                'is_tor' => $result['security_checks']['is_tor'] ?? false,
+                'threat_score' => $ipLocationData['threat_level'] ?? 0,
+                'abuse_confidence_score' => $ipLocationData['abuse_score'] ?? 0
             ],
             'cached' => $config['cache_enabled']
         ],
@@ -89,7 +170,7 @@ try {
     // Log içeriği
     $logContent = [
         'timestamp' => date('Y-m-d H:i:s'),
-        'ip' => $analysis['ip'],
+        'ip' => $result['ip'],
         'request_ip' => $ip ?? 'auto',
         'response' => $response
     ];
@@ -104,28 +185,10 @@ try {
     echo json_encode($response, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     
 } catch (Exception $e) {
-    $errorResponse = [
+    http_response_code($e->getCode() ?: 500);
+    echo json_encode([
         'success' => false,
-        'error' => $e->getMessage(),
-        'timestamp' => time()
-    ];
-    
-    // Hata logunu kaydet
-    $date = date('Y-m-d_H-i-s');
-    $logFile = "{$logDir}/error_{$date}.txt";
-    
-    $logContent = [
-        'timestamp' => date('Y-m-d H:i:s'),
-        'ip' => $_GET['ip'] ?? 'auto',
-        'error' => $e->getMessage(),
-        'response' => $errorResponse
-    ];
-    
-    file_put_contents(
-        $logFile, 
-        json_encode($logContent, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-    );
-    
-    http_response_code(500);
-    echo json_encode($errorResponse);
+        'message' => $e->getMessage(),
+        'code' => $e->getCode()
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 } 

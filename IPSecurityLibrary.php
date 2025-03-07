@@ -6,8 +6,12 @@ class IPSecurityLibrary {
     private $config;
     private $cache;
     private static $instance = null;
+    private $ip2locationData = null;
     
     private const CACHE_DURATION = 3600; // 1 saat
+    
+    private $asnDatabase;
+    private $datacenterDatabase;
     
     private function __construct(array $config = []) {
         $this->config = array_merge([
@@ -18,6 +22,7 @@ class IPSecurityLibrary {
             'proxy_check_enabled' => true,
             'tor_check_enabled' => true,
             'vpn_check_enabled' => true,
+            'ip2location_enabled' => true, // IP2Location kontrolünü aktif et
             'risk_threshold' => [
                 'low' => 2,
                 'medium' => 0,
@@ -55,13 +60,571 @@ class IPSecurityLibrary {
         }
     }
     
+        
+    
+    private function getASNInfoFromDatabase(string $ip): ?array {
+        if (!$this->asnDatabase) {
+            return null;
+        }
+        
+        $ipLong = ip2long($ip);
+        if ($ipLong === false) {
+            return null;
+        }
+        
+        $this->asnDatabase->rewind();
+        while (!$this->asnDatabase->eof()) {
+            $row = $this->asnDatabase->fgetcsv();
+            if (!$row || count($row) < 4) continue;
+            
+            // CSV dosyasından gelen verileri doğrula
+            $startIp = isset($row[0]) ? ip2long($row[0]) : null;
+            $endIp = isset($row[1]) ? ip2long($row[1]) : null;
+            $asn = isset($row[2]) ? trim($row[2]) : null;
+            $organization = isset($row[3]) ? trim($row[3]) : null;
+            
+            if ($startIp === null || $endIp === null || $asn === null || $organization === null) {
+                continue;
+            }
+            
+            if ($ipLong >= $startIp && $ipLong <= $endIp) {
+                return [
+                    'asn' => 'AS' . $asn,
+                    'organization' => $organization,
+                    'isp' => $organization
+                ];
+            }
+        }
+        
+        return null;
+    }
+    
+    private function isDatacenterFromDatabase(string $ip): bool {
+        if (!$this->datacenterDatabase) {
+            return false;
+        }
+        
+        $ipLong = ip2long($ip);
+        if ($ipLong === false) {
+            return false;
+        }
+        
+        $this->datacenterDatabase->rewind();
+        while (!$this->datacenterDatabase->eof()) {
+            $row = $this->datacenterDatabase->fgetcsv();
+            if (!$row) continue;
+            
+            $startIp = ip2long($row[0]);
+            $endIp = ip2long($row[1]);
+            
+            if ($ipLong >= $startIp && $ipLong <= $endIp) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    private function getASNInfoFromBGPTools(string $ip): ?array {
+        try {
+            $url = "https://bgp.tools/api/v1/ip/{$ip}";
+            $response = @file_get_contents($url);
+            
+            if ($response === false) {
+                return null;
+            }
+            
+            $data = json_decode($response, true);
+            if (!$data) {
+                return null;
+            }
+            
+            return [
+                'asn' => 'AS' . ($data['asn'] ?? ''),
+                'organization' => $data['name'] ?? '',
+                'isp' => $data['name'] ?? ''
+            ];
+        } catch (\Exception $e) {
+            $this->logError('BGP.Tools Error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    private function getASNInfoFromTeamCymru(string $ip): ?array {
+        try {
+            // Zaman aşımı süresini azalt ve hata kontrolü ekle
+            $socket = @fsockopen("whois.cymru.com", 43, $errno, $errstr, 3);
+            if (!$socket) {
+                $this->logError("Team Cymru Connection Error: {$errstr} ({$errno})");
+                return null;
+            }
+            
+            fwrite($socket, "begin\nverbose\n{$ip}\nend\n");
+            $response = '';
+            while (!feof($socket)) {
+                $response .= fgets($socket, 128);
+            }
+            fclose($socket);
+            
+            // Yanıtı parse et
+            $lines = explode("\n", trim($response));
+            if (count($lines) < 2) {
+                return null;
+            }
+            
+            $data = str_getcsv(trim($lines[1]), '|');
+            if (count($data) < 3) {
+                return null;
+            }
+            
+            return [
+                'asn' => 'AS' . trim($data[0]),
+                'organization' => trim($data[2]),
+                'isp' => trim($data[2])
+            ];
+        } catch (\Exception $e) {
+            $this->logError('Team Cymru Error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    private function getASNInfo(string $ip): ?array {
+        // Önce veritabanından kontrol et
+        $asnInfo = $this->getASNInfoFromDatabase($ip);
+        if ($asnInfo) {
+            return $asnInfo;
+        }
+        
+        // Sonra BGP.Tools'u dene
+        $asnInfo = $this->getASNInfoFromBGPTools($ip);
+        if ($asnInfo) {
+            return $asnInfo;
+        }
+        
+        // Son çare olarak IP-API'yi dene
+        try {
+            $url = "http://ip-api.com/json/{$ip}?fields=as,org,isp";
+            $response = @file_get_contents($url);
+            
+            if ($response === false) {
+                return null;
+            }
+            
+            $data = json_decode($response, true);
+            if (!$data) {
+                return null;
+            }
+            
+            $asn = '';
+            if (isset($data['as']) && preg_match('/^AS(\d+)\s/', $data['as'], $matches)) {
+                $asn = 'AS' . $matches[1];
+            }
+            
+            return [
+                'asn' => $asn,
+                'organization' => $data['org'] ?? '',
+                'isp' => $data['isp'] ?? ''
+            ];
+        } catch (\Exception $e) {
+            $this->logError('ASN Info Error: ' . $e->getMessage());
+            return null;
+        }
+    }
+    
+    private function getIPLocationNetData(string $ip): ?array {
+        try {
+            $url = "https://www.iplocation.net/get-ipdata";
+            $sources = [
+                'ipapi_is',
+                'ipregistry',
+                'ipapi_co',
+                'ipwhois',
+                'ipgeolocation',
+                'ipdata',
+                'abstractapi',
+                'ipstack',
+                'ipinfo',
+                'maxmind'
+            ];
+
+            foreach ($sources as $source) {
+                $postData = http_build_query([
+                    'ip' => $ip,
+                    'source' => $source,
+                    'ipv' => '4'
+                ]);
+                
+                $ch = curl_init();
+                curl_setopt_array($ch, [
+                    CURLOPT_URL => $url,
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => $postData,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_SSL_VERIFYPEER => false,
+                    CURLOPT_HTTPHEADER => [
+                        'Accept: application/json, text/javascript, */*; q=0.01',
+                        'Accept-Language: en-US,en;q=0.9,tr;q=0.8',
+                        'Content-Type: application/x-www-form-urlencoded; charset=UTF-8',
+                        'Origin: https://www.iplocation.net',
+                        'Referer: https://www.iplocation.net/ip-lookup',
+                        'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+                        'X-Requested-With: XMLHttpRequest'
+                    ]
+                ]);
+                
+                $response = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                
+                if ($httpCode === 200 && $response) {
+                    $data = json_decode($response, true);
+                    if ($data && isset($data['res'])) {
+                        $res = $data['res'];
+                        
+                        // Ortak veri yapısı
+                        $result = [
+                            'is_proxy' => false,
+                            'is_datacenter' => false,
+                            'is_vpn' => false,
+                            'is_tor' => false,
+                            'is_mobile' => false,
+                            'is_satellite' => false,
+                            'company_type' => '',
+                            'source' => $source,
+                            'country' => null,
+                            'country_code' => null,
+                            'region' => null,
+                            'city' => null,
+                            'isp' => null,
+                            'org_name' => null,
+                            'as_no' => null,
+                            'postal_code' => null,
+                            'latitude' => null,
+                            'longitude' => null,
+                            'abuse_score' => null,
+                            'asn_abuse_score' => null,
+                            'connection_type' => null,
+                            'proxy_type' => null,
+                            'threat_level' => null,
+                            'threat_types' => [],
+                            'confidence_score' => null,
+                            'net_speed' => null,
+                            'area_code' => null,
+                            'idd_code' => null
+                        ];
+
+                        switch ($source) {
+                            case 'ipapi_is':
+                                $result['is_proxy'] = $data['isProxy'] ?? false;
+                                $result['is_datacenter'] = $res['is_datacenter'] ?? false;
+                                $result['is_vpn'] = $res['is_vpn'] ?? false;
+                                $result['is_tor'] = $res['is_tor'] ?? false;
+                                $result['is_mobile'] = $res['is_mobile'] ?? false;
+                                $result['is_satellite'] = $res['is_satellite'] ?? false;
+                                $result['company_type'] = $res['company']['type'] ?? '';
+                                $result['country'] = $res['location']['country'] ?? null;
+                                $result['country_code'] = $res['location']['country_code'] ?? null;
+                                $result['region'] = $res['location']['state'] ?? null;
+                                $result['city'] = $res['location']['city'] ?? null;
+                                $result['isp'] = $res['company']['name'] ?? null;
+                                $result['org_name'] = $res['company']['name'] ?? null;
+                                $result['as_no'] = $res['asn']['asn'] ?? null;
+                                $result['postal_code'] = $res['location']['zip'] ?? null;
+                                $result['latitude'] = $res['location']['latitude'] ?? null;
+                                $result['longitude'] = $res['location']['longitude'] ?? null;
+                                $result['abuse_score'] = $res['company']['abuser_score'] ?? null;
+                                $result['asn_abuse_score'] = $res['asn']['abuser_score'] ?? null;
+                                $result['net_speed'] = $res['net_speed'] ?? null;
+                                $result['area_code'] = $res['area_code'] ?? null;
+                                $result['idd_code'] = $res['idd_code'] ?? null;
+                                $result['proxy_type'] = $res['proxy']['proxy_type'] ?? null;
+                                $result['threat'] = $res['proxy']['threat'] ?? null;
+                                break;
+
+                            case 'ipregistry':
+                                $security = $res['security'] ?? [];
+                                $connection = $res['connection'] ?? [];
+                                $company = $res['company'] ?? [];
+                                
+                                $result['is_proxy'] = $security['is_proxy'] ?? false;
+                                $result['is_vpn'] = $security['is_vpn'] ?? false;
+                                $result['is_tor'] = $security['is_tor'] ?? false;
+                                $result['is_datacenter'] = isset($connection['type']) && ($connection['type'] === 'hosting' || $connection['type'] === 'datacenter');
+                                $result['country'] = $res['location']['country']['name'] ?? null;
+                                $result['country_code'] = $res['location']['country']['code'] ?? null;
+                                $result['region'] = $res['location']['region']['name'] ?? null;
+                                $result['city'] = $res['location']['city'] ?? null;
+                                $result['isp'] = $connection['organization'] ?? null;
+                                $result['org_name'] = $company['name'] ?? null;
+                                $result['as_no'] = $connection['asn'] ?? null;
+                                $result['postal_code'] = $res['location']['postal'] ?? null;
+                                $result['latitude'] = $res['location']['latitude'] ?? null;
+                                $result['longitude'] = $res['location']['longitude'] ?? null;
+                                $result['company_type'] = $company['type'] ?? null;
+                                $result['connection_type'] = $connection['type'] ?? null;
+                                break;
+
+                            case 'ipapi_co':
+                                $result['is_proxy'] = $res['proxy'] ?? false;
+                                $result['is_mobile'] = $res['mobile'] ?? false;
+                                $result['country'] = $res['country_name'] ?? null;
+                                $result['country_code'] = $res['country_code'] ?? null;
+                                $result['region'] = $res['region'] ?? null;
+                                $result['city'] = $res['city'] ?? null;
+                                $result['isp'] = $res['isp'] ?? null;
+                                $result['org_name'] = $res['org'] ?? null;
+                                $result['as_no'] = $res['asn'] ?? null;
+                                $result['latitude'] = $res['latitude'] ?? null;
+                                $result['longitude'] = $res['longitude'] ?? null;
+                                break;
+
+                            case 'ipwhois':
+                                $result['is_proxy'] = $res['security']['is_proxy'] ?? false;
+                                $result['is_vpn'] = $res['security']['is_vpn'] ?? false;
+                                $result['is_tor'] = $res['security']['is_tor'] ?? false;
+                                $result['country'] = $res['country'] ?? null;
+                                $result['country_code'] = $res['country_code'] ?? null;
+                                $result['region'] = $res['region'] ?? null;
+                                $result['city'] = $res['city'] ?? null;
+                                $result['isp'] = $res['isp'] ?? null;
+                                $result['org_name'] = $res['org'] ?? null;
+                                $result['as_no'] = $res['asn'] ?? null;
+                                $result['connection_type'] = $res['connection_type'] ?? null;
+                                break;
+
+                            case 'ipgeolocation':
+                                $result['country'] = $res['country_name'] ?? null;
+                                $result['country_code'] = $res['country_code2'] ?? null;
+                                $result['region'] = $res['state_prov'] ?? null;
+                                $result['city'] = $res['city'] ?? null;
+                                $result['isp'] = $res['isp'] ?? null;
+                                $result['org_name'] = $res['organization'] ?? null;
+                                $result['latitude'] = $res['latitude'] ?? null;
+                                $result['longitude'] = $res['longitude'] ?? null;
+                                break;
+
+                            case 'ipdata':
+                                $result['is_proxy'] = $res['threat']['is_proxy'] ?? false;
+                                $result['is_vpn'] = $res['threat']['is_vpn'] ?? false;
+                                $result['is_tor'] = $res['threat']['is_tor'] ?? false;
+                                $result['country'] = $res['country_name'] ?? null;
+                                $result['country_code'] = $res['country_code'] ?? null;
+                                $result['region'] = $res['region'] ?? null;
+                                $result['city'] = $res['city'] ?? null;
+                                $result['isp'] = $res['asn']['name'] ?? null;
+                                $result['as_no'] = $res['asn']['asn'] ?? null;
+                                $result['latitude'] = $res['latitude'] ?? null;
+                                $result['longitude'] = $res['longitude'] ?? null;
+                                $result['threat_level'] = $res['threat']['level'] ?? null;
+                                $result['threat_types'] = $res['threat']['types'] ?? [];
+                                break;
+
+                            case 'abstractapi':
+                                $result['is_vpn'] = $res['security']['is_vpn'] ?? false;
+                                $result['is_tor'] = $res['security']['is_tor'] ?? false;
+                                $result['country'] = $res['country'] ?? null;
+                                $result['country_code'] = $res['country_code'] ?? null;
+                                $result['region'] = $res['region'] ?? null;
+                                $result['city'] = $res['city'] ?? null;
+                                $result['latitude'] = $res['latitude'] ?? null;
+                                $result['longitude'] = $res['longitude'] ?? null;
+                                $result['connection_type'] = $res['connection']['type'] ?? null;
+                                break;
+
+                            case 'ipstack':
+                                $result['country'] = $res['country_name'] ?? null;
+                                $result['country_code'] = $res['country_code'] ?? null;
+                                $result['region'] = $res['region_name'] ?? null;
+                                $result['city'] = $res['city'] ?? null;
+                                $result['latitude'] = $res['latitude'] ?? null;
+                                $result['longitude'] = $res['longitude'] ?? null;
+                                $result['connection_type'] = $res['connection']['type'] ?? null;
+                                $result['is_proxy'] = $res['security']['proxy'] ?? false;
+                                $result['is_vpn'] = $res['security']['vpn'] ?? false;
+                                $result['is_tor'] = $res['security']['tor'] ?? false;
+                                $result['threat_level'] = $res['security']['threat_level'] ?? null;
+                                break;
+
+                            case 'ipinfo':
+                                $result['country'] = $res['country'] ?? null;
+                                $result['region'] = $res['region'] ?? null;
+                                $result['city'] = $res['city'] ?? null;
+                                $result['isp'] = $res['org'] ?? null;
+                                $result['postal_code'] = $res['postal'] ?? null;
+                                $result['latitude'] = isset($res['loc']) ? explode(',', $res['loc'])[0] ?? null : null;
+                                $result['longitude'] = isset($res['loc']) ? explode(',', $res['loc'])[1] ?? null : null;
+                                $result['company_type'] = isset($res['company']) && isset($res['company']['type']) ? $res['company']['type'] : null;
+                                break;
+
+                            case 'maxmind':
+                                $result['country'] = $res['country']['names']['en'] ?? null;
+                                $result['country_code'] = $res['country']['iso_code'] ?? null;
+                                $result['region'] = isset($res['subdivisions'][0]['names']['en']) ? $res['subdivisions'][0]['names']['en'] : null;
+                                $result['city'] = isset($res['city']['names']['en']) ? $res['city']['names']['en'] : null;
+                                $result['postal_code'] = isset($res['postal']['code']) ? $res['postal']['code'] : null;
+                                $result['latitude'] = isset($res['location']['latitude']) ? $res['location']['latitude'] : null;
+                                $result['longitude'] = isset($res['location']['longitude']) ? $res['location']['longitude'] : null;
+                                $result['is_proxy'] = isset($res['traits']['is_anonymous_proxy']) ? $res['traits']['is_anonymous_proxy'] : false;
+                                $result['is_vpn'] = isset($res['traits']['is_anonymous_vpn']) ? $res['traits']['is_anonymous_vpn'] : false;
+                                $result['is_tor'] = isset($res['traits']['is_tor_exit_node']) ? $res['traits']['is_tor_exit_node'] : false;
+                                break;
+                        }
+
+                        // Eğer herhangi bir güvenlik riski varsa proxy olarak işaretle
+                        if ($result['is_vpn'] || $result['is_tor'] || $result['is_datacenter']) {
+                            $result['is_proxy'] = true;
+                        }
+
+                        // Eğer yeterli veri varsa sonucu döndür
+                        if ($result['country'] !== null && $result['city'] !== null) {
+                            return $result;
+                        }
+                    }
+                }
+            }
+            
+            return null;
+        } catch (\Exception $e) {
+            $this->logError('IP Location Net Error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    public function getIPLocationData(string $ip): ?array {
+        // Önce yeni IP Location servisini dene
+        $ipLocationNetData = $this->getIPLocationNetData($ip);
+        if ($ipLocationNetData !== null) {
+            return $ipLocationNetData;
+        }
+        
+        // Eğer yeni servis başarısız olursa eski yöntemi dene
+        try {
+            $url = "https://www.iplocation.net/";
+            $postData = http_build_query([
+                'query' => $ip
+            ]);
+            
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $url,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $postData,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
+            ]);
+            
+            $response = curl_exec($ch);
+            curl_close($ch);
+            
+            $result = [];
+            
+            if (preg_match('/ISP:\s*([^<\n]+)/', $response, $matches)) {
+                $result['isp'] = trim($matches[1]);
+            }
+            
+            if (preg_match('/Host Name:\s*([^<\n]+)/', $response, $matches)) {
+                $result['hostname'] = trim($matches[1]);
+            }
+            
+            return $result;
+        } catch (\Exception $e) {
+            $this->logError('IP Location Error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    public function isTurkishISP(string $ispName): bool {
+        $turkishISPs = [
+            'turk telekom', 'turktelekom', 'ttnet',
+            'superonline', 'vodafone', 'turkcell',
+            'turknet', 'turksat', 'millenicom',
+            'd-smart', 'dsmart'
+        ];
+        
+        $ispName = strtolower($ispName);
+        foreach ($turkishISPs as $isp) {
+            if (stripos($ispName, $isp) !== false) {
+                return true;
+            }
+        }
+        
+            return false;
+        }
+        
+    private function isISP(string $ip): bool {
+        try {
+            // Önce IP Location'dan kontrol et
+            $ipLocationData = $this->getIPLocationData($ip);
+            if ($ipLocationData !== null) {
+                // ISP kontrolü
+                if (isset($ipLocationData['isp']) && $this->isTurkishISP($ipLocationData['isp'])) {
+                    return true;
+                }
+                
+                // Hostname kontrolü
+                if (isset($ipLocationData['hostname']) && $this->isTurkishISP($ipLocationData['hostname'])) {
+                return true;
+            }
+        }
+        
+            // IP2Location'dan kontrol et
+            $ip2locationData = $this->getIP2LocationData($ip);
+            if ($ip2locationData !== null) {
+                if (strpos(strtolower($ip2locationData['usage_type']), 'isp') !== false) {
+                return true;
+                }
+            }
+
+            // IP-API'den ISP bilgisini kontrol et
+            $url = "http://ip-api.com/json/{$ip}?fields=isp,org,as";
+            $response = @file_get_contents($url);
+            if ($response !== false) {
+                $data = json_decode($response, true);
+                if ($data && isset($data['as'])) {
+                    // AS numarasını temizle
+                    $asn = preg_replace('/^(AS\d+).*$/', '$1', $data['as']);
+                    
+                    // Türk ISP'leri ve ASN numaraları
+                    $turkishISPs = [
+                        'AS9121',  // Turk Telekom
+                        'AS34984', // Tellcom/Superonline
+                        'AS8386',  // Vodafone
+                        'AS16135', // Turkcell
+                        'AS15897', // Vodafone TR
+                        'AS196978', // TurkNet
+                        'AS20978',  // Türksat
+                        'AS34296',  // Millenicom
+                        'AS43260',  // D-Smart
+                        'AS205813', // Superonline Iletisim
+                        'AS211557', // Turknet
+                        'AS47524',  // Turksat
+                    ];
+
+                    if (in_array($asn, $turkishISPs)) {
+                    return true;
+                }
+            }
+            }
+        } catch (\Exception $e) {
+            $this->logError('ISP Check Error: ' . $e->getMessage());
+        }
+        
+        return false;
+    }
+
     public function analyzeIP(string $ip = null): array {
-        $ip = $ip ?? $this->getClientIP();
+        if ($ip === null) {
+            $ip = $this->getClientIP();
+        }
+        
+        $cacheKey = 'ip_analysis_' . md5($ip);
         
         // Cache kontrolü
-        $cacheKey = 'ip_analysis_' . md5($ip);
-        if ($this->config['cache_enabled'] && $cached = $this->cache->get($cacheKey)) {
-            return $cached;
+        if ($this->config['cache_enabled'] && $this->cache->has($cacheKey)) {
+            return $this->cache->get($cacheKey);
         }
         
         $analysis = [
@@ -96,534 +659,397 @@ class IPSecurityLibrary {
         
         return $analysis;
     }
-    
+
+    private function getClientIP(): string {
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+        
+        if (isset($_SERVER['HTTP_X_FORWARDED_FOR']) && filter_var($_SERVER['HTTP_X_FORWARDED_FOR'], FILTER_VALIDATE_IP)) {
+            $ip = $_SERVER['HTTP_X_FORWARDED_FOR'];
+        } elseif (isset($_SERVER['HTTP_CLIENT_IP']) && filter_var($_SERVER['HTTP_CLIENT_IP'], FILTER_VALIDATE_IP)) {
+            $ip = $_SERVER['HTTP_CLIENT_IP'];
+        }
+        
+        return $ip;
+    }
+
     private function performBasicChecks(string $ip): array {
         return [
-            'is_valid' => $this->isValidIP($ip),
-            'is_public' => $this->isPublicIP($ip),
-            'ip_version' => $this->getIPVersion($ip),
-            'is_blacklisted' => $this->isBlacklisted($ip)
+            'is_valid' => filter_var($ip, FILTER_VALIDATE_IP),
+            'is_public' => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE),
+            'version' => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 6 : 4
         ];
     }
-    
-    private function performSecurityChecks(string $ip): array {
-        $checks = [
-            'is_proxy' => $this->config['proxy_check_enabled'] ? $this->isProxy($ip) : null,
-            'is_vpn' => $this->config['vpn_check_enabled'] ? $this->isVPN($ip) : null,
-            'is_tor' => $this->config['tor_check_enabled'] ? $this->isTorExit($ip) : null,
-            'is_datacenter' => $this->isDatacenter($ip),
-            'threat_score' => $this->calculateThreatScore($ip),
-            'abuse_confidence_score' => $this->getAbuseConfidenceScore($ip)
-        ];
-        
-        return array_filter($checks, function($value) {
-            return $value !== null;
-        });
-    }
-    
-    private function getGeolocationData(string $ip): ?array {
+
+    private function getGeolocationData(string $ip): array {
         try {
-            $url = "http://ip-api.com/json/{$ip}?fields=status,message,country,countryCode,region,regionName,city,district,zip,lat,lon,timezone,isp,org,as,mobile,proxy,hosting";
-            
+            $url = "http://ip-api.com/json/{$ip}?fields=status,message,continent,continentCode,country,countryCode,region,regionName,city,district,zip,lat,lon,timezone,offset,currency,isp,org,as,asname,reverse,mobile,proxy,hosting,query";
             $response = @file_get_contents($url);
+            
             if ($response === false) {
-                throw new \Exception("Failed to get IP-API data");
+                return [];
             }
             
             $data = json_decode($response, true);
             if (!$data || $data['status'] === 'fail') {
-                throw new \Exception($data['message'] ?? 'Unknown error');
+                return [];
             }
             
-            // Konum bilgilerini düzenle
-            return [
-                'country' => [
-                    'name' => $data['country'] ?? 'Unknown',
-                    'code' => $data['countryCode'] ?? 'Unknown',
-                    'flag' => $this->getCountryFlag($data['countryCode'] ?? '')
-                ],
-                'region' => [
-                    'name' => $data['regionName'] ?? 'Unknown',
-                    'code' => $data['region'] ?? 'Unknown'
-                ],
-                'city' => $data['city'] ?? 'Unknown',
-                'district' => $data['district'] ?? 'Unknown',
-                'postal_code' => $data['zip'] ?? 'Unknown',
-                'location' => [
-                    'latitude' => $data['lat'] ?? 0,
-                    'longitude' => $data['lon'] ?? 0
-                ],
-                'isp' => $data['isp'] ?? 'Unknown',
-                'organization' => $data['org'] ?? 'Unknown',
-                'timezone' => $data['timezone'] ?? 'Unknown'
-            ];
+            return $data;
         } catch (\Exception $e) {
             $this->logError('Geolocation Error: ' . $e->getMessage());
-            return null;
+            return [];
         }
     }
-    
+
+    private function performSecurityChecks(string $ip): array {
+        $checks = [
+            'is_proxy' => false,
+            'is_vpn' => false,
+            'is_tor' => false,
+            'is_bot' => false,
+            'is_spam' => false,
+            'is_attack_source' => false,
+            'blacklist_status' => []
+        ];
+        
+        // Proxy kontrolü
+        if ($this->config['proxy_check_enabled']) {
+            $checks['is_proxy'] = $this->checkProxy($ip);
+        }
+        
+        // VPN kontrolü
+        if ($this->config['vpn_check_enabled']) {
+            $checks['is_vpn'] = $this->checkVPN($ip);
+        }
+        
+        // Tor kontrolü
+        if ($this->config['tor_check_enabled']) {
+            $checks['is_tor'] = $this->checkTor($ip);
+        }
+        
+        // Bot kontrolü
+        $checks['is_bot'] = $this->checkBot();
+        
+        // Spam kontrolü
+        $checks['is_spam'] = $this->checkSpam($ip);
+        
+        // Saldırı kaynağı kontrolü
+        $checks['is_attack_source'] = $this->checkAttackSource($ip);
+        
+        // Kara liste kontrolleri
+        $checks['blacklist_status'] = $this->checkBlacklists($ip);
+        
+        return $checks;
+    }
+
+    private function checkProxy(string $ip): bool {
+        try {
+            // IP2Location kontrolü
+            $usageType = $this->getUsageType($ip);
+            if ($usageType === 'PROXY') {
+                    return true;
+                }
+
+            // IP Location kontrolü
+            $ipLocationData = $this->getIPLocationData($ip);
+            if ($ipLocationData !== null && isset($ipLocationData['is_proxy']) && $ipLocationData['is_proxy'] === true) {
+                return true;
+            }
+
+            // IP-API kontrolü
+            $url = "http://ip-api.com/json/{$ip}?fields=proxy,status";
+                $response = @file_get_contents($url);
+                if ($response !== false) {
+                    $data = json_decode($response, true);
+                if ($data && isset($data['status']) && $data['status'] === 'success' && isset($data['proxy'])) {
+                    if ((bool)$data['proxy'] === true) {
+                        return true;
+                    }
+                }
+            }
+
+            // Proxy port kontrolü
+            $commonProxyPorts = [80, 81, 83, 88, 8080, 8081, 8888, 3128];
+            foreach ($commonProxyPorts as $port) {
+                $connection = @fsockopen($ip, $port, $errno, $errstr, 1);
+                if ($connection) {
+                    fclose($connection);
+                    return true;
+                }
+            }
+
+            // DNS blacklist kontrolü
+            $reverseIp = implode('.', array_reverse(explode('.', $ip)));
+            $proxyBlacklists = [
+                'proxy.bl.gweep.ca',
+                'proxy.block.transip.nl',
+                'proxy.mind.net.pl',
+                'socks.dnsbl.sorbs.net',
+                'misc.dnsbl.sorbs.net'
+            ];
+
+            foreach ($proxyBlacklists as $bl) {
+                if (checkdnsrr("{$reverseIp}.{$bl}.", 'A')) {
+                    return true;
+                }
+            }
+
+            return false;
+
+        } catch (\Exception $e) {
+            $this->logError('Proxy Check Error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    private function checkVPN(string $ip): bool {
+        try {
+            $url = "http://ip-api.com/json/{$ip}?fields=hosting";
+            $response = @file_get_contents($url);
+            
+            if ($response !== false) {
+                $data = json_decode($response, true);
+                if ($data && isset($data['hosting']) && $data['hosting'] === true) {
+                    return true;
+                }
+            }
+        } catch (\Exception $e) {
+            $this->logError('VPN Check Error: ' . $e->getMessage());
+        }
+        
+        return false;
+    }
+
+    private function checkTor(string $ip): bool {
+        try {
+            $url = "https://check.torproject.org/cgi-bin/TorBulkExitList.py?ip=1.1.1.1";
+            $response = @file_get_contents($url);
+            
+            if ($response !== false) {
+                $exitNodes = explode("\n", $response);
+                return in_array($ip, $exitNodes);
+            }
+        } catch (\Exception $e) {
+            $this->logError('Tor Check Error: ' . $e->getMessage());
+        }
+        
+        return false;
+    }
+
+    private function checkBot(): bool {
+        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        
+        $botPatterns = [
+            'bot', 'spider', 'crawler', 'scraper',
+            'googlebot', 'bingbot', 'yandexbot', 'baiduspider',
+            'facebookexternalhit', 'twitterbot', 'rogerbot',
+            'linkedinbot', 'embedly', 'quora link preview',
+            'showyoubot', 'outbrain', 'pinterest', 'slackbot',
+            'vkShare', 'W3C_Validator'
+        ];
+        
+        foreach ($botPatterns as $pattern) {
+            if (stripos($userAgent, $pattern) !== false) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    private function checkSpam(string $ip): bool {
+        try {
+            // Spamhaus kontrolü
+            $reverseIp = implode('.', array_reverse(explode('.', $ip)));
+            $dnsbl_lookup = $reverseIp . '.zen.spamhaus.org';
+            
+            if (checkdnsrr($dnsbl_lookup, 'A')) {
+                return true;
+            }
+        } catch (\Exception $e) {
+            $this->logError('Spam Check Error: ' . $e->getMessage());
+        }
+        
+        return false;
+    }
+
+    private function checkAttackSource(string $ip): bool {
+        try {
+            // AbuseIPDB kontrolü
+            if (isset($this->config['api_keys']['abuseipdb']) && !empty($this->config['api_keys']['abuseipdb'])) {
+                $url = "https://api.abuseipdb.com/api/v2/check";
+                $options = [
+                    'http' => [
+                        'header' => "Key: " . $this->config['api_keys']['abuseipdb'] . "\r\n" .
+                                  "Accept: application/json\r\n"
+                    ]
+                ];
+                
+                $context = stream_context_create($options);
+                $response = @file_get_contents($url . "?ipAddress=" . $ip, false, $context);
+                
+                if ($response !== false) {
+                    $data = json_decode($response, true);
+                    if ($data && isset($data['data']['abuseConfidenceScore']) && $data['data']['abuseConfidenceScore'] > 50) {
+                        return true;
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+            $this->logError('Attack Source Check Error: ' . $e->getMessage());
+        }
+        
+        return false;
+    }
+
+    private function checkBlacklists(string $ip): array {
+        $blacklists = [
+            'zen.spamhaus.org',
+            'bl.spamcop.net',
+            'cbl.abuseat.org',
+            'dnsbl.sorbs.net',
+            'b.barracudacentral.org'
+        ];
+        
+        $results = [];
+        $reverseIp = implode('.', array_reverse(explode('.', $ip)));
+        
+        foreach ($blacklists as $bl) {
+            try {
+                $host = $reverseIp . '.' . $bl;
+                if (checkdnsrr($host, 'A')) {
+                    $results[$bl] = true;
+                } else {
+                    $results[$bl] = false;
+                }
+            } catch (\Exception $e) {
+                $this->logError("Blacklist Check Error ({$bl}): " . $e->getMessage());
+                $results[$bl] = null;
+            }
+        }
+        
+        return $results;
+    }
+
     private function assessRisk(string $ip): array {
-        $riskFactors = [
-            'geolocation_risk' => $this->calculateGeolocationRisk($ip),
-            'proxy_risk' => $this->calculateProxyRisk($ip),
-            'behavior_risk' => $this->calculateBehaviorRisk($ip),
-            'reputation_risk' => $this->calculateReputationRisk($ip)
-        ];
+        $score = 0;
+        $factors = [];
         
-        $totalRiskScore = array_sum($riskFactors);
+        // Temel kontroller
+        $basicChecks = $this->performBasicChecks($ip);
+        if (!$basicChecks['is_valid']) {
+            $score -= 5;
+            $factors[] = 'invalid_ip';
+        }
+        if (!$basicChecks['is_public']) {
+            $score -= 3;
+            $factors[] = 'private_ip';
+        }
+        
+        // Güvenlik kontrolleri
+        $securityChecks = $this->performSecurityChecks($ip);
+        if ($securityChecks['is_proxy']) {
+            $score -= 2;
+            $factors[] = 'proxy_detected';
+        }
+        if ($securityChecks['is_vpn']) {
+            $score -= 2;
+            $factors[] = 'vpn_detected';
+        }
+        if ($securityChecks['is_tor']) {
+            $score -= 3;
+            $factors[] = 'tor_detected';
+        }
+        if ($securityChecks['is_bot']) {
+            $score -= 1;
+            $factors[] = 'bot_detected';
+        }
+        if ($securityChecks['is_spam']) {
+            $score -= 4;
+            $factors[] = 'spam_source';
+        }
+        if ($securityChecks['is_attack_source']) {
+            $score -= 5;
+            $factors[] = 'attack_source';
+        }
+        
+        // Kara liste kontrolleri
+        foreach ($securityChecks['blacklist_status'] as $bl => $status) {
+            if ($status === true) {
+                $score -= 2;
+                $factors[] = 'blacklisted_' . $bl;
+            }
+        }
+        
+        // Datacenter kontrolü
+        if ($this->isDatacenter($ip)) {
+            $score -= 1;
+            $factors[] = 'datacenter_ip';
+        }
+        
+        // Risk seviyesi belirleme
+        $riskLevel = 'low';
+        if ($score <= $this->config['risk_threshold']['high']) {
+            $riskLevel = 'high';
+        } elseif ($score <= $this->config['risk_threshold']['medium']) {
+            $riskLevel = 'medium';
+        }
         
         return [
-            'risk_factors' => $riskFactors,
-            'total_risk_score' => $totalRiskScore,
-            'risk_level' => $this->determineRiskLevel($totalRiskScore),
-            'recommendations' => $this->generateSecurityRecommendations($totalRiskScore, $riskFactors)
+            'score' => $score,
+            'level' => $riskLevel,
+            'factors' => $factors
         ];
-    }
-    
-    private function determineRiskLevel(float $riskScore): string {
-        if ($riskScore >= $this->config['risk_threshold']['low']) {
-            return 'LOW';
-        } elseif ($riskScore >= $this->config['risk_threshold']['medium']) {
-            return 'MEDIUM';
-        }
-        return 'HIGH';
-    }
-    
-    private function generateSecurityRecommendations(float $riskScore, array $riskFactors): array {
-        $recommendations = [];
-        
-        if ($riskScore < $this->config['risk_threshold']['medium']) {
-            $recommendations[] = 'Enable CAPTCHA verification';
-            $recommendations[] = 'Implement rate limiting';
-            
-            if ($riskFactors['proxy_risk'] > 0.5) {
-                $recommendations[] = 'Block access through proxy/VPN';
-            }
-            
-            if ($riskFactors['geolocation_risk'] > 0.7) {
-                $recommendations[] = 'Restrict access from high-risk countries';
-            }
-        }
-        
-        return $recommendations;
-    }
-    
-    private function logAnalysis(array $analysis): void {
-        if (!$this->config['log_enabled']) {
-            return;
-        }
-        
-        $logEntry = [
-            'timestamp' => date('Y-m-d H:i:s'),
-            'ip' => $analysis['ip'],
-            'risk_level' => $analysis['risk_assessment']['risk_level'],
-            'security_flags' => $analysis['security_checks']
-        ];
-        
-        $logFile = $this->config['log_path'] . 'security_' . date('Y-m-d') . '.log';
-        file_put_contents($logFile, json_encode($logEntry) . "\n", FILE_APPEND);
-    }
-    
-    private function logError(string $message): void {
-        if ($this->config['log_enabled']) {
-            $logFile = $this->config['log_path'] . 'errors_' . date('Y-m-d') . '.log';
-            file_put_contents($logFile, date('Y-m-d H:i:s') . " - {$message}\n", FILE_APPEND);
-        }
-    }
-    
-    // Yardımcı metodlar
-    private function isValidIP(string $ip): bool {
-        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_IPV6) !== false;
-    }
-    
-    private function isPublicIP(string $ip): bool {
-        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
-    }
-    
-    private function getIPVersion(string $ip): ?int {
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-            return 4;
-        } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-            return 6;
-        }
-        return null;
-    }
-
-    private function getClientDetails(): array {
-        return [
-            'browser' => $this->getBrowserInfo(),
-            'operating_system' => $this->getOperatingSystem(),
-            'device' => $this->getDeviceInfo(),
-            'screen' => $this->getScreenInfo(),
-            'language' => $this->getClientLanguage(),
-            'timezone' => $this->getClientTimezone()
-        ];
-    }
-
-    private function getBrowserInfo(): array {
-        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
-        $browser = [
-            'user_agent' => $userAgent,
-            'name' => 'Unknown',
-            'version' => 'Unknown',
-            'platform' => 'Unknown',
-            'pattern' => 'Unknown'
-        ];
-
-        if (preg_match('/(opera|chrome|safari|firefox|msie|trident(?=\/))\/?\s*(\d+)/i', $userAgent, $matches)) {
-            $browser['name'] = $matches[1];
-            $browser['version'] = $matches[2];
-        }
-
-        // Tarayıcı özellikleri
-        $browser['features'] = [
-            'cookies_enabled' => isset($_SERVER['HTTP_COOKIE']),
-            'javascript_enabled' => true, // Client-side ile kontrol edilmeli
-            'language' => $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? 'Unknown',
-            'do_not_track' => $_SERVER['HTTP_DNT'] ?? 'Unknown'
-        ];
-
-        return $browser;
-    }
-
-    private function getOperatingSystem(): array {
-        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
-        $os = [
-            'name' => 'Unknown',
-            'version' => 'Unknown',
-            'architecture' => 'Unknown'
-        ];
-
-        $osPatterns = [
-            '/windows nt 11/i'      => ['Windows 11', 'NT 11.0'],
-            '/windows nt 10/i'      => ['Windows 10', 'NT 10.0'],
-            '/windows nt 6.3/i'     => ['Windows 8.1', 'NT 6.3'],
-            '/windows nt 6.2/i'     => ['Windows 8', 'NT 6.2'],
-            '/windows nt 6.1/i'     => ['Windows 7', 'NT 6.1'],
-            '/windows nt 6.0/i'     => ['Windows Vista', 'NT 6.0'],
-            '/windows nt 5.2/i'     => ['Windows Server 2003/XP x64', 'NT 5.2'],
-            '/windows nt 5.1/i'     => ['Windows XP', 'NT 5.1'],
-            '/windows xp/i'         => ['Windows XP', 'NT 5.1'],
-            '/macintosh|mac os x/i' => ['Mac OS X', ''],
-            '/mac_powerpc/i'        => ['Mac OS 9', ''],
-            '/linux/i'              => ['Linux', ''],
-            '/ubuntu/i'             => ['Ubuntu', ''],
-            '/debian/i'             => ['Debian', ''],
-            '/fedora/i'             => ['Fedora', ''],
-            '/centos/i'             => ['CentOS', ''],
-            '/redhat/i'             => ['Red Hat', ''],
-            '/mint/i'               => ['Linux Mint', ''],
-            '/arch/i'               => ['Arch Linux', ''],
-            '/iphone/i'             => ['iPhone', 'iOS'],
-            '/ipod/i'               => ['iPod', 'iOS'],
-            '/ipad/i'               => ['iPad', 'iOS'],
-            '/android/i'            => ['Android', ''],
-            '/webos/i'              => ['Mobile', ''],
-            '/chromeos|cros/i'      => ['Chrome OS', ''],
-            '/freebsd/i'            => ['FreeBSD', ''],
-            '/openbsd/i'            => ['OpenBSD', ''],
-            '/netbsd/i'             => ['NetBSD', ''],
-            '/sunos/i'              => ['SunOS', ''],
-            '/solaris/i'            => ['Solaris', ''],
-            '/playstation/i'        => ['PlayStation', ''],
-            '/xbox/i'               => ['Xbox', ''],
-            '/nintendo/i'           => ['Nintendo', ''],
-            '/roku/i'               => ['Roku', ''],
-            '/tizen/i'              => ['Tizen', ''],
-            '/sailfish/i'           => ['Sailfish OS', ''],
-            '/harmony/i'            => ['Harmony OS', ''],
-            '/kaios/i'              => ['KaiOS', '']
-        ];
-
-        foreach ($osPatterns as $pattern => $osInfo) {
-            if (preg_match($pattern, $userAgent)) {
-                $os['name'] = $osInfo[0];
-                $os['version'] = $osInfo[1];
-                break;
-            }
-        }
-
-        return $os;
     }
 
     private function getDeviceInfo(): array {
         $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        
         return [
             'type' => $this->getDeviceType($userAgent),
             'brand' => $this->getDeviceBrand($userAgent),
-            'model' => $this->getDeviceModel($userAgent),
-            'screen_resolution' => $this->getScreenResolution(),
-            'is_mobile' => $this->isMobileDevice($userAgent),
-            'is_tablet' => $this->isTabletDevice($userAgent),
-            'is_desktop' => $this->isDesktopDevice($userAgent)
-        ];
-    }
-
-    private function getDetailedLocation(array $geoData): array {
-        $location = [
-            'continent' => [
-                'code' => $geoData['continent_code'] ?? 'Unknown',
-                'name' => $geoData['continent_name'] ?? 'Unknown'
-            ],
-            'country' => [
-                'code' => $geoData['country_code'] ?? 'Unknown',
-                'name' => $geoData['country_name'] ?? 'Unknown',
-                'is_eu' => $geoData['is_eu'] ?? false
-            ],
-            'region' => [
-                'code' => $geoData['region_code'] ?? 'Unknown',
-                'name' => $geoData['region_name'] ?? 'Unknown'
-            ],
-            'city' => [
-                'name' => $geoData['city'] ?? 'Unknown',
-                'district' => $geoData['district'] ?? 'Unknown',
-                'postal_code' => $geoData['postal_code'] ?? 'Unknown'
-            ],
-            'location' => [
-                'latitude' => $geoData['latitude'] ?? 0,
-                'longitude' => $geoData['longitude'] ?? 0,
-                'accuracy_radius' => $geoData['accuracy_radius'] ?? 0,
-                'time_zone' => $geoData['time_zone'] ?? 'Unknown'
-            ],
-            'network' => [
-                'autonomous_system_number' => $geoData['autonomous_system_number'] ?? 'Unknown',
-                'autonomous_system_organization' => $geoData['autonomous_system_organization'] ?? 'Unknown',
-                'isp' => $geoData['isp'] ?? 'Unknown',
-                'organization' => $geoData['organization'] ?? 'Unknown',
-                'connection_type' => $geoData['connection_type'] ?? 'Unknown'
-            ],
-            'additional' => [
-                'currency' => $this->getCurrencyByCountry($geoData['country_code'] ?? ''),
-                'calling_code' => $this->getCallingCode($geoData['country_code'] ?? ''),
-                'flag' => $this->getCountryFlag($geoData['country_code'] ?? '')
-            ]
-        ];
-
-        // Ekstra konum detayları için Google Geocoding API kullanımı
-        if ($this->config['google_maps_api_key']) {
-            $location['detailed_address'] = $this->getDetailedAddressFromGoogle(
-                $geoData['latitude'] ?? 0,
-                $geoData['longitude'] ?? 0
-            );
-        }
-
-        return $location;
-    }
-
-    private function getDetailedAddressFromGoogle(float $lat, float $lng): ?array {
-        if (empty($this->config['google_maps_api_key'])) {
-            return null;
-        }
-
-        $url = sprintf(
-            'https://maps.googleapis.com/maps/api/geocode/json?latlng=%f,%f&key=%s',
-            $lat,
-            $lng,
-            $this->config['google_maps_api_key']
-        );
-
-        try {
-            $response = @file_get_contents($url);
-            if ($response === false) {
-                throw new \Exception("Failed to get Google Geocoding data");
-            }
-
-            $data = json_decode($response, true);
-            if (!$data || $data['status'] !== 'OK') {
-                throw new \Exception($data['error_message'] ?? 'Unknown error');
-            }
-
-            // İlk sonucu al ve adres bileşenlerini parse et
-            $result = $data['results'][0] ?? null;
-            if (!$result) {
-                return null;
-            }
-
-            return $this->parseGoogleAddressComponents($result['address_components']);
-        } catch (\Exception $e) {
-            $this->logError('Google Geocoding Error: ' . $e->getMessage());
-            return null;
-        }
-    }
-
-    private function parseGoogleAddressComponents(array $components): array {
-        $address = [
-            'street_number' => '',
-            'route' => '',
-            'neighborhood' => '',
-            'district' => '',
-            'city' => '',
-            'state' => '',
-            'country' => '',
-            'postal_code' => '',
-            'formatted_address' => ''
-        ];
-
-        foreach ($components as $component) {
-            $types = $component['types'] ?? [];
-            $value = $component['long_name'] ?? '';
-
-            switch (true) {
-                case in_array('street_number', $types):
-                    $address['street_number'] = $value;
-                    break;
-                case in_array('route', $types):
-                    $address['route'] = $value;
-                    break;
-                case in_array('neighborhood', $types):
-                    $address['neighborhood'] = $value;
-                    break;
-                case in_array('sublocality', $types):
-                    $address['district'] = $value;
-                    break;
-                case in_array('locality', $types):
-                    $address['city'] = $value;
-                    break;
-                case in_array('administrative_area_level_1', $types):
-                    $address['state'] = $value;
-                    break;
-                case in_array('country', $types):
-                    $address['country'] = $value;
-                    break;
-                case in_array('postal_code', $types):
-                    $address['postal_code'] = $value;
-                    break;
-            }
-        }
-
-        $address['formatted_address'] = implode(' ', array_filter([
-            $address['street_number'],
-            $address['route'],
-            $address['neighborhood'],
-            $address['district'],
-            $address['city'],
-            $address['state'],
-            $address['country'],
-            $address['postal_code']
-        ]));
-
-        return $address;
-    }
-
-    private function getScreenInfo(): array {
-        // JavaScript ile client tarafında alınması gereken bilgiler
-        return [
-            'width' => $_COOKIE['screen_width'] ?? 'Unknown',
-            'height' => $_COOKIE['screen_height'] ?? 'Unknown',
-            'color_depth' => $_COOKIE['color_depth'] ?? 'Unknown',
-            'pixel_ratio' => $_COOKIE['pixel_ratio'] ?? 'Unknown',
-            'orientation' => $_COOKIE['screen_orientation'] ?? 'Unknown'
-        ];
-    }
-
-    private function getClientLanguage(): array {
-        $acceptLanguage = $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '';
-        $languages = [];
-        
-        if (!empty($acceptLanguage)) {
-            // Dil kodlarını ayır ve öncelik sırasına göre sırala
-            $langs = explode(',', $acceptLanguage);
-            foreach ($langs as $lang) {
-                $parts = explode(';q=', $lang);
-                $code = trim($parts[0]);
-                $priority = $parts[1] ?? 1.0;
-                $languages[] = [
-                    'code' => $code,
-                    'priority' => (float)$priority,
-                    'name' => $this->getLanguageName($code)
-                ];
-            }
-            usort($languages, function($a, $b) {
-                return $b['priority'] <=> $a['priority'];
-            });
-        }
-        
-        return [
-            'primary' => $languages[0] ?? ['code' => 'Unknown', 'name' => 'Unknown'],
-            'all' => $languages
-        ];
-    }
-
-    private function getClientTimezone(): array {
-        return [
-            'offset' => $_COOKIE['timezone_offset'] ?? 'Unknown',
-            'name' => $_COOKIE['timezone_name'] ?? 'Unknown',
-            'region' => $_COOKIE['timezone_region'] ?? 'Unknown'
+            'model' => $this->getDeviceModel($userAgent)
         ];
     }
 
     private function getDeviceType(string $userAgent): string {
-        $deviceTypes = [
-            'mobile' => [
-                '/iphone/i',
-                '/ipod/i',
-                '/android.*mobile/i',
-                '/windows.*phone/i',
-                '/blackberry/i',
-            ],
-            'tablet' => [
-                '/ipad/i',
-                '/android(?!.*mobile)/i',
-                '/windows.*touch/i',
-            ],
-            'desktop' => [
-                '/windows/i',
-                '/macintosh/i',
-                '/linux/i',
-            ]
-        ];
+        $mobileKeywords = ['Mobile', 'Android', 'iPhone', 'iPad', 'Windows Phone'];
+        $tabletKeywords = ['iPad', 'Tablet', 'Kindle'];
         
-        foreach ($deviceTypes as $type => $patterns) {
-            foreach ($patterns as $pattern) {
-                if (preg_match($pattern, $userAgent)) {
-                    return $type;
-                }
+        foreach ($tabletKeywords as $keyword) {
+            if (stripos($userAgent, $keyword) !== false) {
+                return 'tablet';
             }
         }
         
-        return 'unknown';
+        foreach ($mobileKeywords as $keyword) {
+            if (stripos($userAgent, $keyword) !== false) {
+                return 'mobile';
+            }
+        }
+        
+        return 'desktop';
     }
 
     private function getDeviceBrand(string $userAgent): string {
         $brands = [
-            'Apple' => '/iphone|ipad|ipod|macintosh|mac os|iwatch|airpods/i',
-            'Samsung' => '/samsung|galaxy|sm-[a-z0-9]+/i',
-            'Huawei' => '/huawei|honor|h60|h30|mate|p[0-9]+|nova/i',
-            'Xiaomi' => '/xiaomi|redmi|poco|mi [0-9]|mi note|mi max|mi mix|mi pad/i',
-            'LG' => '/lg|lge|lm-[a-z0-9]+/i',
-            'Sony' => '/sony|xperia|sonyericsson/i',
-            'HTC' => '/htc|htc_|htc-/i',
-            'Motorola' => '/motorola|moto [a-z]|moto[a-z][0-9]|moto g|moto e|moto x/i',
-            'Nokia' => '/nokia|lumia|maemo/i',
-            'Microsoft' => '/windows phone|windows mobile|microsoft|lumia/i',
-            'Google' => '/pixel|nexus/i',
-            'OnePlus' => '/oneplus|one plus|op[0-9][0-9]|nord/i',
-            'OPPO' => '/oppo|cph[0-9]+|find x|reno/i',
-            'Vivo' => '/vivo|v[0-9]+[a-z]?/i',
-            'Realme' => '/realme|rmx[0-9]+/i',
-            'Asus' => '/asus|zenfone|zenpad|zenbook|rog phone/i',
-            'Lenovo' => '/lenovo|thinkpad|ideapad|yoga/i',
-            'Acer' => '/acer|aspire|predator/i',
-            'Dell' => '/dell|xps|inspiron|latitude|precision/i',
-            'HP' => '/hp|hewlett-packard|pavilion|envy|spectre|omen/i',
-            'Toshiba' => '/toshiba|satellite|portege|tecra/i',
-            'BlackBerry' => '/blackberry|bb[0-9]+|rim tablet/i',
-            'ZTE' => '/zte|blade|axon|nubia/i',
-            'Alcatel' => '/alcatel|one touch/i',
-            'TCL' => '/tcl|alcatel|idol/i',
-            'Meizu' => '/meizu|m[0-9]+/i',
-            'Sharp' => '/sharp|aquos/i',
-            'Philips' => '/philips|phl/i',
-            'BQ' => '/bq|aquaris/i',
-            'Wiko' => '/wiko|view|sunny|lenny|jerry/i',
-            'Nothing' => '/nothing phone/i',
-            'Fairphone' => '/fairphone/i'
+            'Apple' => ['iPhone', 'iPad', 'iPod'],
+            'Samsung' => ['Samsung'],
+            'Huawei' => ['Huawei'],
+            'Xiaomi' => ['Xiaomi', 'Redmi'],
+            'OnePlus' => ['OnePlus'],
+            'LG' => ['LG'],
+            'Sony' => ['Sony'],
+            'HTC' => ['HTC'],
+            'Google' => ['Pixel'],
+            'Microsoft' => ['Windows Phone']
         ];
         
-        foreach ($brands as $brand => $pattern) {
-            if (preg_match($pattern, strtolower($userAgent))) {
-                return $brand;
+        foreach ($brands as $brand => $keywords) {
+            foreach ($keywords as $keyword) {
+                if (stripos($userAgent, $keyword) !== false) {
+                    return $brand;
+                }
             }
         }
         
@@ -631,400 +1057,449 @@ class IPSecurityLibrary {
     }
 
     private function getDeviceModel(string $userAgent): string {
-        // iPhone modelleri
-        if (preg_match('/iPhone\s*(\d+,\d+)/i', $userAgent, $matches)) {
+        // iPhone model tespiti
+        if (preg_match('/iPhone\s*(\d+,\d+)/', $userAgent, $matches)) {
             return 'iPhone ' . $matches[1];
         }
         
-        // iPad modelleri
-        if (preg_match('/iPad\s*(\d+,\d+)/i', $userAgent, $matches)) {
+        // iPad model tespiti
+        if (preg_match('/iPad\s*(\d+,\d+)/', $userAgent, $matches)) {
             return 'iPad ' . $matches[1];
         }
         
-        // Android cihazlar
-        if (preg_match('/Android.*?;\s*([\w\s-]+)\s+Build/i', $userAgent, $matches)) {
+        // Android cihaz model tespiti
+        if (preg_match('/;\s*([^;)]+(?:(?!Build)\S)*)(?:\s*Build|\))/', $userAgent, $matches)) {
             return trim($matches[1]);
         }
         
         return 'Unknown';
     }
 
-    private function getLanguageName(string $code): string {
-        $languages = [
-            'tr' => 'Türkçe',
-            'en' => 'English',
-            'de' => 'Deutsch',
-            'fr' => 'Français',
-            'es' => 'Español',
-            'it' => 'Italiano',
-            'ru' => 'Русский',
-            'ar' => 'العربية',
-            'zh' => '中文',
-            'ja' => '日本語',
-            'ko' => '한국어',
-            'pt' => 'Português',
-            'nl' => 'Nederlands',
-            'pl' => 'Polski',
-            'sv' => 'Svenska',
-            'da' => 'Dansk',
-            'fi' => 'Suomi',
-            'no' => 'Norsk',
-            'cs' => 'Čeština',
-            'hu' => 'Magyar',
-            'el' => 'Ελληνικά',
-            'he' => 'עברית',
-            'hi' => 'हिन्दी',
-            'th' => 'ไทย',
-            'vi' => 'Tiếng Việt',
-            'id' => 'Bahasa Indonesia',
-            'ms' => 'Bahasa Melayu',
-            'fa' => 'فارسی',
-            'uk' => 'Українська',
-            'ro' => 'Română',
-            'bg' => 'Български',
-            'hr' => 'Hrvatski',
-            'sr' => 'Српски',
-            'sk' => 'Slovenčina',
-            'sl' => 'Slovenščina',
-            'et' => 'Eesti',
-            'lv' => 'Latviešu',
-            'lt' => 'Lietuvių',
-            'az' => 'Azərbaycan',
-            'kk' => 'Қазақша',
-            'uz' => 'O\'zbek',
-            'hy' => 'Հայերեն',
-            'ka' => 'ქართული',
-            'bn' => 'বাংলা',
-            'ur' => 'اردو',
-            'ta' => 'தமிழ்',
-            'te' => 'తెలుగు',
-            'ml' => 'മലയാളം',
-            'mr' => 'मराठी',
-            'ne' => 'नेपाली',
-            'si' => 'සිංහල',
-            'km' => 'ខ្មែរ',
-            'lo' => 'ລາວ',
-            'my' => 'မြန်မာ'
-        ];
+    private function getBrowserInfo(): array {
+        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
         
-        $code = strtolower(substr($code, 0, 2));
-        return $languages[$code] ?? $code;
-    }
-
-    private function isMobileDevice(string $userAgent): bool {
-        $mobilePatterns = [
-            // Genel mobil belirteçler
-            '/Mobile|Portable|Tablet|Android|Touch/i',
-            
-            // Apple cihazlar
-            '/iP(hone|od|ad)|iOS|iPhone OS/i',
-            
-            // Android cihazlar
-            '/Android.*Mobile|Android.*Chrome|Android.*Firefox/i',
-            
-            // Windows mobil cihazlar
-            '/Windows Phone|Windows Mobile|Windows CE|IEMobile|WPDesktop|ZuneWP7/i',
-            
-            // Diğer mobil işletim sistemleri
-            '/BlackBerry|BB10|RIM Tablet OS|webOS|PalmOS|bada|Tizen|Kindle|Silk|KF[A-Z][A-Z]|FBAN|FBAV/i',
-            
-            // Mobil tarayıcılar
-            '/Opera Mini|Opera Mobi|OPiOS|Coast|Instagram|FBAN|FBAV/i',
-            
-            // Akıllı saatler ve giyilebilir cihazlar
-            '/Watch|Glass|Gear|Fitbit|Galaxy Watch|Mi Band|Apple Watch/i',
-            
-            // Oyun konsolları
-            '/Nintendo|PlayStation|Xbox|PS[0-9]|PSP/i',
-            
-            // Diğer mobil cihazlar
-            '/Symbian|Series[0-9]|S60|SonyEricsson|Nokia|DoCoMo|KDDI|UP.Browser|J2ME|MIDP|cldc|NetFront|Dolfin|Jasmine|Fennec/i',
-            
-            // Mobil operatör belirteçleri
-            '/Vodafone|T-Mobile|Sprint|AT&T|Verizon|O2|Orange|Turkcell|Turk Telekom|TTNET/i'
-        ];
-        
-        foreach ($mobilePatterns as $pattern) {
-            if (preg_match($pattern, $userAgent) === 1) {
-                return true;
-            }
-        }
-        
-        return false;
-    }
-
-    private function isTabletDevice(string $userAgent): bool {
-        $tabletPatterns = [
-            // Genel tablet belirteçler
-            '/Tablet|tab/i',
-            
-            // iPad ve iOS tabletler
-            '/iPad|iPad.*Mobile|iPad.*Safari/i',
-            
-            // Android tabletler (mobil olmayan)
-            '/Android(?!.*Mobile)|Android.*Chrome(?!.*Mobile)|Android.*Firefox(?!.*Mobile)/i',
-            
-            // Windows tabletler
-            '/Windows.*Touch|Windows.*Tablet|Windows NT.*Touch|Windows.*ARM|KFAPWI/i',
-            
-            // Amazon Kindle ve Fire tabletler
-            '/Kindle|Silk|KFTT|KFOT|KFJWA|KFJWI|KFSOWI|KFTHWA|KFTHWI|KFAPWA|KFAPWI|KFARWI|KFASWI|KFTBWI|KFMEWI|KFFOWI|KFSAWA|KFSAWI|KFARWI|KFASWI|KFTBWI|KFMEWI|KFFOWI/i',
-            
-            // Samsung tabletler
-            '/SM-T|GT-P|SC-01C|SCH-I800|SGH-I987|SGH-T849|SGH-T859|SGH-T869|SPH-P100|GT-P1000|GT-P3100|GT-P3110|GT-P5100|GT-P5110|GT-P6200|GT-P6800|GT-P7100|GT-P7300|GT-P7310|GT-P7500|GT-P7510|SCH-I800|SCH-I815|SCH-I905|SGH-I957|SGH-I987|SGH-T849|SGH-T859|SGH-T869|SPH-P100|GT-P3113|GT-P5113|GT-P8110|GT-N8000|GT-N8010|GT-N8020|GT-N5100|GT-N5110|SHV-E140K|SHV-E140L|SHV-E140S|SHV-E150S|SHV-E230K|SHV-E230L|SHV-E230S|SHW-M180K|SHW-M180L|SHW-M180S|SHW-M180W|SHW-M300W|SHW-M305W|SHW-M380K|SHW-M380S|SHW-M380W|SHW-M430W|SHW-M480K|SHW-M480S|SHW-M480W|SHW-M485W|SHW-M486W|SHW-M500W|GT-I9500|GT-I9502|GT-I9505|GT-I9508|SM-P900|SM-P901|SM-P905|SM-T111|SM-T210|SM-T211|SM-T230|SM-T231|SM-T235|SM-T280|SM-T285|SM-T310|SM-T311|SM-T315|SM-T320|SM-T321|SM-T325|SM-T330|SM-T331|SM-T335|SM-T350|SM-T355|SM-T360|SM-T365|SM-T370|SM-T375|SM-T377|SM-T380|SM-T385|SM-T510|SM-T515|SM-T520|SM-T525|SM-T530|SM-T535|SM-T550|SM-T555|SM-T560|SM-T561|SM-T580|SM-T585|SM-T587|SM-T590|SM-T595|SM-T597|SM-T710|SM-T713|SM-T715|SM-T719|SM-T720|SM-T725|SM-T810|SM-T815|SM-T817|SM-T819|SM-T820|SM-T825|SM-T827|SM-T830|SM-T835|SM-T837|SM-T860|SM-T865|SM-T867|SM-P610|SM-P615|SM-T290|SM-T295|SM-T500|SM-T505|SM-T220|SM-T225|SM-T970|SM-T975|SM-T976|SM-T870|SM-T875|SM-T876|SM-T730|SM-T735|SM-T736|SM-X700|SM-X706|SM-X800|SM-X806|SM-X900|SM-X906/i',
-            
-            // Huawei tabletler
-            '/MediaPad|HUAWEI.*MediaPad|MediaPad.*Huawei|AGS2-W09|AGS2-L09|AGS2-L03|AGS2-W19|BAH2-W19|BAH2-L09|BAH2-W09|BAH-W09|BAH-L09|BG2-W09|CMR-W09|CMR-AL09|CMR-W19|CPN-W09|CPN-AL00|JDN2-W09|JDN2-L09|M2-801L|M2-801W|M2-802L|M2-803L|M3-801L|M3-801W|M3-802L|M3-803L|M5-801L|M5-801W|M5-802L|M5-803L|M6-801L|M6-801W|M6-802L|M6-803L|SCM-W09|SHT-W09|SHT-AL09|AGS3-W09|AGS3-L09|DBY-W09|DBY-L09|HarmonyOS|MatePad/i',
-            
-            // Lenovo tabletler
-            '/Lenovo.*Tab|IdeaTab|IdeaPad|Lenovo.*Yoga|Yoga.*Tab|TB-X103F|TB-X304F|TB-X304L|TB-X304X|TB-X505F|TB-X505L|TB-X505X|TB-X605F|TB-X605L|TB-X605LC|TB-X606F|TB-X606FA|TB-X606X|TB-J606F|TB-J606L|TB-8504F|TB-8504X|TB-8504L|TB-8704F|TB-8704X|TB-8704V|TB-8704N|TB-7504F|TB-7504X|TB-7504L|TB-7304F|TB-7304X|TB-7304I|TB-7304L|TB-X304F|TB-X304L|TB-X304X|TB-X505F|TB-X505L|TB-X505X|TB-X605F|TB-X605L|TB-X605LC|TB-X606F|TB-X606FA|TB-X606X|TB-J606F|TB-J606L/i',
-            
-            // Asus tabletler
-            '/ASUS.*Pad|Transformer|TF101|TF201|TF300|TF700|TF701|TF810|ME171|ME172|ME173|ME176|ME176C|ME176CE|ME181|ME181C|ME302|ME302C|ME302KL|ME371|ME372|ME372CG|ME372CL|ME572|ME572C|ME572CL|ME176|ME176C|ME176CE|ME181|ME181C|ME302|ME302C|ME302KL|ME371|ME372|ME372CG|ME372CL|ME572|ME572C|ME572CL|P01Y|P01Z|P01T|P01V|P01MA|P01W|P00C|P00I|P00A|P01W|P01V|P01MA|P01T|P01Z|P01Y|P00C|P00I|P00A/i',
-            
-            // Diğer tablet üreticileri
-            '/PlayBook|RIM Tablet|HTC.*Flyer|HTC.*Jetstream|HTC.*Tablet|Nexus 7|Nexus 9|Nexus 10|Dell.*Streak|Dell.*Venue|Dell.*Latitude|HP.*TouchPad|Venue 8|Venue 7|Venue 10|XiaoMi.*Pad|Mi.*Pad|Redmi.*Pad|OPPO.*Pad|vivo.*Pad|realme.*Pad|TCL.*Tab|Honor.*Pad|Nokia.*Tab/i'
-        ];
-        
-        foreach ($tabletPatterns as $pattern) {
-            if (preg_match($pattern, $userAgent) === 1) {
-                return true;
-            }
-        }
-        
-        // Mobil olmayan Android cihazları tablet olarak kabul et
-        if (preg_match('/Android/i', $userAgent) === 1 && preg_match('/Mobile/i', $userAgent) === 0) {
-            return true;
-        }
-        
-        return false;
-    }
-
-    private function isDesktopDevice(string $userAgent): bool {
-        return !$this->isMobileDevice($userAgent) && !$this->isTabletDevice($userAgent);
-    }
-
-    private function getScreenResolution(): array {
         return [
-            'width' => $_COOKIE['screen_width'] ?? 'Unknown',
-            'height' => $_COOKIE['screen_height'] ?? 'Unknown'
+            'name' => $this->getBrowserName($userAgent),
+            'version' => $this->getBrowserVersion($userAgent),
+            'engine' => $this->getBrowserEngine($userAgent)
         ];
     }
 
-    private function getClientIP(): string {
-        $ipSources = [
-            // Cloudflare
-            'HTTP_CF_CONNECTING_IP',
-            
-            // CDN ve Proxy Servisleri
-            'HTTP_TRUE_CLIENT_IP', // Akamai ve bazı CDN'ler
-            'HTTP_X_REAL_IP',      // Nginx proxy
-            'HTTP_X_FORWARDED_FOR',
-            'HTTP_X_FORWARDED',
-            'HTTP_FORWARDED_FOR',
-            'HTTP_FORWARDED',
-            
-            // Load Balancer ve Proxy Sunucular
-            'HTTP_X_CLUSTER_CLIENT_IP',
-            'HTTP_CLIENT_IP',
-            
-            // AWS, Google Cloud ve Azure
-            'HTTP_X_AWS_FORWARDED_FOR',
-            'HTTP_X_GOOGLE_REAL_IP',
-            'HTTP_X_AZURE_CLIENTIP',
-            
-            // VPN ve Proxy Kontrolleri
-            'HTTP_VIA',
-            'HTTP_X_COMING_FROM',
-            'HTTP_COMING_FROM',
-            
-            // Son çare olarak doğrudan IP
-            'REMOTE_ADDR'
+    private function getBrowserName(string $userAgent): string {
+        $browsers = [
+            'Edge' => 'Edg',
+            'Chrome' => 'Chrome',
+            'Firefox' => 'Firefox',
+            'Safari' => 'Safari',
+            'Opera' => 'OPR',
+            'IE' => 'MSIE|Trident'
         ];
+        
+        foreach ($browsers as $browser => $pattern) {
+            if (preg_match("/{$pattern}/i", $userAgent)) {
+                return $browser;
+            }
+        }
+        
+        return 'Unknown';
+    }
 
-        foreach ($ipSources as $source) {
-            if (!empty($_SERVER[$source])) {
-                if ($source === 'HTTP_X_FORWARDED_FOR') {
-                    // X-Forwarded-For başlığında birden fazla IP olabilir
-                    $ips = explode(',', $_SERVER[$source]);
-                    // İlk geçerli IP'yi bul
-                    foreach ($ips as $ip) {
-                        $ip = trim($ip);
-                        if ($this->isValidPublicIP($ip)) {
-                            return $ip;
-                        }
-                    }
-                } else {
-                    $ip = trim($_SERVER[$source]);
-                    if ($this->isValidPublicIP($ip)) {
-                        return $ip;
+    private function getBrowserVersion(string $userAgent): string {
+        $browser = $this->getBrowserName($userAgent);
+        
+        switch ($browser) {
+            case 'Edge':
+                preg_match('/Edg\/([\d.]+)/', $userAgent, $matches);
+                break;
+            case 'Chrome':
+                preg_match('/Chrome\/([\d.]+)/', $userAgent, $matches);
+                break;
+            case 'Firefox':
+                preg_match('/Firefox\/([\d.]+)/', $userAgent, $matches);
+                break;
+            case 'Safari':
+                preg_match('/Version\/([\d.]+)/', $userAgent, $matches);
+                break;
+            case 'Opera':
+                preg_match('/OPR\/([\d.]+)/', $userAgent, $matches);
+                break;
+            case 'IE':
+                preg_match('/(MSIE|rv:)\s?([\d.]+)/', $userAgent, $matches);
+                break;
+            default:
+                return 'Unknown';
+        }
+        
+        return $matches[1] ?? 'Unknown';
+    }
+
+    private function getBrowserEngine(string $userAgent): string {
+        if (stripos($userAgent, 'Gecko') !== false) {
+            return 'Gecko';
+        } elseif (stripos($userAgent, 'WebKit') !== false) {
+            return 'WebKit';
+        } elseif (stripos($userAgent, 'Trident') !== false) {
+            return 'Trident';
+        } elseif (stripos($userAgent, 'Presto') !== false) {
+            return 'Presto';
+        }
+        
+        return 'Unknown';
+    }
+
+    private function getScreenInfo(): array {
+        return [
+            'width' => $_SERVER['HTTP_SEC_CH_UA_PLATFORM_WIDTH'] ?? null,
+            'height' => $_SERVER['HTTP_SEC_CH_UA_PLATFORM_HEIGHT'] ?? null,
+            'color_depth' => $_SERVER['HTTP_SEC_CH_UA_COLOR_DEPTH'] ?? null,
+            'pixel_ratio' => $_SERVER['HTTP_SEC_CH_UA_PIXEL_RATIO'] ?? null
+        ];
+    }
+
+    private function getClientLanguage(): array {
+        $languages = [];
+        
+        if (isset($_SERVER['HTTP_ACCEPT_LANGUAGE'])) {
+            $langs = explode(',', $_SERVER['HTTP_ACCEPT_LANGUAGE']);
+            
+            foreach ($langs as $lang) {
+                $parts = explode(';', $lang);
+                $code = trim($parts[0]);
+                $q = isset($parts[1]) ? (float) str_replace('q=', '', $parts[1]) : 1.0;
+                
+                $languages[] = [
+                    'code' => $code,
+                    'quality' => $q
+                ];
+            }
+            
+            usort($languages, function($a, $b) {
+                return $b['quality'] <=> $a['quality'];
+            });
+        }
+        
+        return [
+            'preferred' => $languages[0]['code'] ?? null,
+            'all' => $languages
+        ];
+    }
+
+    private function getClientTimezone(): array {
+        return [
+            'name' => $_SERVER['HTTP_SEC_CH_UA_TIMEZONE'] ?? null,
+            'offset' => $_SERVER['HTTP_SEC_CH_UA_TIMEZONE_OFFSET'] ?? null
+        ];
+    }
+
+    private function getOperatingSystem(): array {
+        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        
+        $os = [
+            'name' => $this->getOSName($userAgent),
+            'version' => $this->getOSVersion($userAgent),
+            'architecture' => $this->getOSArchitecture()
+        ];
+        
+        return $os;
+    }
+
+    private function getOSName(string $userAgent): string {
+        $os = [
+            'Windows' => 'Windows',
+            'Mac' => 'Mac OS X|Macintosh',
+            'Linux' => 'Linux',
+            'Ubuntu' => 'Ubuntu',
+            'Android' => 'Android',
+            'iOS' => 'iPhone|iPad|iPod'
+        ];
+        
+        foreach ($os as $name => $pattern) {
+            if (preg_match("/{$pattern}/i", $userAgent)) {
+                return $name;
+            }
+        }
+        
+        return 'Unknown';
+    }
+
+    private function getOSVersion(string $userAgent): string {
+        $os = $this->getOSName($userAgent);
+        
+        switch ($os) {
+            case 'Windows':
+                preg_match('/Windows NT ([\d.]+)/', $userAgent, $matches);
+                $versions = [
+                    '10.0' => '10',
+                    '6.3' => '8.1',
+                    '6.2' => '8',
+                    '6.1' => '7',
+                    '6.0' => 'Vista',
+                    '5.2' => 'XP x64',
+                    '5.1' => 'XP'
+                ];
+                return $versions[$matches[1] ?? ''] ?? $matches[1] ?? 'Unknown';
+                
+            case 'Mac':
+                preg_match('/Mac OS X ([\d_.]+)/', $userAgent, $matches);
+                return str_replace('_', '.', $matches[1] ?? 'Unknown');
+                
+            case 'Android':
+                preg_match('/Android ([\d.]+)/', $userAgent, $matches);
+                return $matches[1] ?? 'Unknown';
+                
+            case 'iOS':
+                preg_match('/OS ([\d_]+)/', $userAgent, $matches);
+                return str_replace('_', '.', $matches[1] ?? 'Unknown');
+                
+            default:
+                return 'Unknown';
+        }
+    }
+
+    private function getOSArchitecture(): string {
+        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        
+        if (stripos($userAgent, 'x64') !== false || stripos($userAgent, 'x86_64') !== false || stripos($userAgent, 'Win64') !== false || stripos($userAgent, 'amd64') !== false) {
+            return '64-bit';
+        }
+        
+        if (stripos($userAgent, 'x86') !== false || stripos($userAgent, 'Win32') !== false) {
+            return '32-bit';
+        }
+        
+        return 'Unknown';
+    }
+
+    private function getProxyType(string $ip): ?string {
+        try {
+            if ($this->config['api_keys']['proxycheck']) {
+                $url = "http://proxycheck.io/v2/{$ip}?key=" . $this->config['api_keys']['proxycheck'] . "&vpn=1&risk=1";
+                $response = @file_get_contents($url);
+                
+                if ($response !== false) {
+                    $data = json_decode($response, true);
+                    if ($data && isset($data[$ip]['type'])) {
+                        return $data[$ip]['type'];
                     }
                 }
             }
+        } catch (\Exception $e) {
+            $this->logError('Proxy Type Check Error: ' . $e->getMessage());
         }
-
-        // Hiçbir geçerli IP bulunamazsa
-        return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+        
+        return null;
     }
 
-    private function isValidPublicIP(string $ip): bool {
-        if (empty($ip)) {
-            return false;
+    private function getUsageType(string $ip): string {
+        // Datacenter kontrolü - En yüksek öncelik
+        if ($this->isDatacenter($ip)) {
+            return 'DCH';
         }
 
-        // IP formatı kontrolü
-        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_IPV6)) {
-            return false;
+        // IP Location'dan kontrol et
+        $ipLocationData = $this->getIPLocationData($ip);
+        if ($ipLocationData !== null) {
+        // Datacenter kontrolü
+            if (isset($ipLocationData['is_datacenter']) && $ipLocationData['is_datacenter']) {
+            return 'DCH';
         }
+        
+            // Şirket ve bağlantı tipi kontrolü
+            $companyType = strtolower($ipLocationData['company_type'] ?? '');
+            $connectionType = strtolower($ipLocationData['connection_type'] ?? '');
 
-        // Özel IP aralıklarını kontrol et
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-            // IP adresinin bazı özel durumlarını kontrol et
-            $invalidIPs = [
-                '0.0.0.0',
-                '::1',
-                'localhost',
-                '127.0.0.1'
-            ];
+            if (in_array($companyType, ['hosting', 'datacenter', 'server', 'business', 'datacenter/hosting']) ||
+                in_array($connectionType, ['hosting', 'datacenter', 'server', 'business', 'datacenter/hosting'])) {
+                return 'DCH';
+            }
 
-            if (!in_array($ip, $invalidIPs)) {
-                return true;
+            // ISP kontrolü
+            $ispName = $ipLocationData['isp'] ?? '';
+            $orgName = $ipLocationData['org_name'] ?? '';
+            if ($this->isTurkishISP($ispName) || $this->isTurkishISP($orgName)) {
+                // Eğer datacenter değilse ISP olarak işaretle
+                if (!$this->isDatacenter($ip)) {
+                    return 'ISP';
+                }
+            }
+
+            // Proxy/VPN/TOR kontrolü
+            if ((isset($ipLocationData['is_proxy']) && $ipLocationData['is_proxy']) ||
+                (isset($ipLocationData['is_vpn']) && $ipLocationData['is_vpn']) ||
+                (isset($ipLocationData['is_tor']) && $ipLocationData['is_tor'])) {
+                return 'PROXY';
+            }
+
+            // Mobil ve uydu kontrolü
+            if (isset($ipLocationData['is_mobile']) && $ipLocationData['is_mobile']) {
+                return 'MOB';
+            }
+            if (isset($ipLocationData['is_satellite']) && $ipLocationData['is_satellite']) {
+                return 'SAT';
             }
         }
 
-        return false;
+        // IP2Location kontrolü
+        $ip2locationData = $this->getIP2LocationData($ip);
+        if ($ip2locationData !== null && isset($ip2locationData['usage_type'])) {
+            $usageType = strtoupper($ip2locationData['usage_type']);
+            
+            switch ($usageType) {
+                case 'DCH':
+                case 'DATACENTER':
+                case 'HOSTING':
+                case 'BUSINESS':
+                case 'DATACENTER/HOSTING':
+                    return 'DCH';
+                case 'ISP':
+                    if (isset($ip2locationData['isp']) && $this->isTurkishISP($ip2locationData['isp'])) {
+                        // Eğer datacenter değilse ISP olarak işaretle
+                        if (!$this->isDatacenter($ip)) {
+                            return 'ISP';
+                        }
+                    }
+                    break;
+                case 'PROXY':
+                case 'VPN':
+                case 'TOR':
+                    return 'PROXY';
+                case 'PUB':
+                case 'RES':
+                case 'RESIDENTIAL':
+                    return 'PUB';
+                case 'MOB':
+                case 'MOBILE':
+                    return 'MOB';
+                case 'SAT':
+                case 'SATELLITE':
+                    return 'SAT';
+            }
+        }
+
+        // IP-API kontrolü
+        try {
+            $url = "http://ip-api.com/json/{$ip}?fields=isp,org,as,hosting";
+            $response = @file_get_contents($url);
+            if ($response !== false) {
+                $data = json_decode($response, true);
+                if ($data) {
+                    if (isset($data['hosting']) && $data['hosting'] === true) {
+                        return 'DCH';
+                    }
+                    
+                    if (isset($data['isp']) && $this->isTurkishISP($data['isp'])) {
+                        // Eğer datacenter değilse ISP olarak işaretle
+                        if (!$this->isDatacenter($ip)) {
+                            return 'ISP';
+                        }
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+            $this->logError('IP-API Check Error: ' . $e->getMessage());
+        }
+
+        return 'COM';
     }
 
-    private function isBlacklisted(string $ip): bool {
-        // Kara liste kontrolü
-        $blacklistedIPs = $this->getBlacklistedIPs();
-        return in_array($ip, $blacklistedIPs);
+    private function getFraudScore(string $ip): ?int {
+        try {
+            if ($this->config['api_keys']['ipqualityscore']) {
+                $url = "https://ipqualityscore.com/api/json/ip/{$this->config['api_keys']['ipqualityscore']}/{$ip}";
+                $response = @file_get_contents($url);
+                
+                if ($response !== false) {
+                    $data = json_decode($response, true);
+                    if ($data && isset($data['fraud_score'])) {
+                        return (int) $data['fraud_score'];
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+            $this->logError('Fraud Score Check Error: ' . $e->getMessage());
+        }
+        
+        return null;
     }
 
-    private function getBlacklistedIPs(): array {
-        // Kara listeyi bir dosyadan veya veritabanından okuyabilirsiniz
-        // Şimdilik örnek bir liste döndürelim
-        return [
-            '1.2.3.4',
-            '5.6.7.8',
-            // Diğer yasaklı IP'ler...
-        ];
+    private function logError(string $message): void {
+        if ($this->config['log_enabled']) {
+            $logFile = $this->config['log_path'] . 'error.log';
+            $timestamp = date('Y-m-d H:i:s');
+            $logMessage = "[{$timestamp}] {$message}\n";
+            
+            @file_put_contents($logFile, $logMessage, FILE_APPEND);
+        }
     }
 
-    private function isVPN(string $ip): bool {
-        // VPN kontrolü
-        return false; // Şimdilik varsayılan olarak false döndürüyoruz
-    }
-
-    private function isTorExit(string $ip): bool {
-        // Tor çıkış noktası kontrolü
-        return false; // Şimdilik varsayılan olarak false döndürüyoruz
+    private function logAnalysis(array $analysis): void {
+        if ($this->config['log_enabled']) {
+            $logFile = $this->config['log_path'] . 'analysis.log';
+            $timestamp = date('Y-m-d H:i:s');
+            $logMessage = "[{$timestamp}] " . json_encode($analysis) . "\n";
+            
+            @file_put_contents($logFile, $logMessage, FILE_APPEND);
+        }
     }
 
     private function isDatacenter(string $ip): bool {
-        // Datacenter IP aralıkları ve belirteçleri
-        $datacenterPatterns = [
-            // Amazon AWS
-            '/^(13\.32\.0\.0|13\.33\.0\.0|13\.34\.0\.0|13\.35\.0\.0|52\.92\.0\.0|52\.93\.0\.0|52\.94\.0\.0|52\.95\.0\.0|54\.230\.0\.0|54\.231\.0\.0|54\.239\.0\.0|54\.240\.0\.0|204\.246\.0\.0|205\.251\.192\.0|205\.251\.224\.0|205\.251\.240\.0|205\.251\.244\.0|205\.251\.247\.0|205\.251\.248\.0|207\.171\.160\.0|207\.171\.176\.0|216\.137\.32\.0|216\.182\.224\.0|216\.182\.232\.0|216\.182\.236\.0|216\.182\.238\.0)/',
-            
-            // Google Cloud
-            '/^(34\.64\.0\.0|34\.65\.0\.0|34\.66\.0\.0|34\.67\.0\.0|34\.68\.0\.0|34\.69\.0\.0|34\.70\.0\.0|34\.71\.0\.0|34\.72\.0\.0|34\.73\.0\.0|34\.74\.0\.0|34\.75\.0\.0|34\.76\.0\.0|34\.77\.0\.0|34\.78\.0\.0|34\.79\.0\.0|34\.80\.0\.0|34\.81\.0\.0|34\.82\.0\.0|34\.83\.0\.0|34\.84\.0\.0|34\.85\.0\.0|34\.86\.0\.0|34\.87\.0\.0|34\.88\.0\.0|34\.89\.0\.0|34\.90\.0\.0|34\.91\.0\.0|34\.92\.0\.0|34\.93\.0\.0|34\.94\.0\.0|34\.95\.0\.0|34\.96\.0\.0|34\.97\.0\.0|34\.98\.0\.0|34\.99\.0\.0|34\.100\.0\.0|34\.101\.0\.0|34\.102\.0\.0|34\.103\.0\.0|34\.104\.0\.0)/',
-            
-            // Microsoft Azure
-            '/^(13\.64\.0\.0|13\.65\.0\.0|13\.66\.0\.0|13\.67\.0\.0|13\.68\.0\.0|13\.69\.0\.0|13\.70\.0\.0|13\.71\.0\.0|13\.72\.0\.0|13\.73\.0\.0|13\.74\.0\.0|13\.75\.0\.0|13\.76\.0\.0|13\.77\.0\.0|13\.78\.0\.0|13\.79\.0\.0|13\.80\.0\.0|13\.81\.0\.0|13\.82\.0\.0|13\.83\.0\.0|13\.84\.0\.0|13\.85\.0\.0|13\.86\.0\.0|13\.87\.0\.0|13\.88\.0\.0|13\.89\.0\.0|13\.90\.0\.0|13\.91\.0\.0|13\.92\.0\.0|13\.93\.0\.0)/',
-            
-            // DigitalOcean
-            '/^(45\.55\.0\.0|45\.56\.0\.0|45\.57\.0\.0|45\.58\.0\.0|45\.59\.0\.0|45\.60\.0\.0|45\.61\.0\.0|45\.62\.0\.0|45\.63\.0\.0|45\.64\.0\.0|45\.65\.0\.0|45\.66\.0\.0|45\.67\.0\.0|45\.68\.0\.0|45\.69\.0\.0|45\.70\.0\.0|45\.71\.0\.0|45\.72\.0\.0|45\.73\.0\.0|45\.74\.0\.0|45\.75\.0\.0|45\.76\.0\.0|45\.77\.0\.0|45\.78\.0\.0|45\.79\.0\.0)/',
-            
-            // Linode
-            '/^(23\.239\.0\.0|45\.33\.0\.0|45\.56\.64\.0|45\.79\.0\.0|50\.116\.0\.0|66\.175\.208\.0|66\.228\.32\.0|69\.164\.192\.0|72\.14\.176\.0|74\.207\.224\.0|96\.126\.96\.0|97\.107\.128\.0|104\.200\.16\.0|104\.237\.128\.0|106\.187\.0\.0|108\.170\.48\.0|109\.74\.192\.0|139\.162\.0\.0|173\.230\.128\.0|173\.255\.192\.0|178\.79\.128\.0|188\.165\.192\.0|188\.166\.0\.0|192\.155\.80\.0|192\.157\.208\.0|198\.58\.96\.0|198\.74\.48\.0|207\.192\.68\.0|207\.192\.69\.0|207\.192\.70\.0|207\.192\.71\.0|209\.123\.234\.0|213\.52\.128\.0|213\.52\.129\.0|213\.52\.130\.0|213\.52\.131\.0|213\.52\.132\.0|213\.52\.133\.0|213\.52\.134\.0|213\.52\.135\.0)/',
-            
-            // OVH
-            '/^(37\.187\.0\.0|46\.105\.0\.0|51\.254\.0\.0|51\.255\.0\.0|137\.74\.0\.0|141\.94\.0\.0|141\.95\.0\.0|142\.44\.128\.0|144\.217\.0\.0|147\.135\.0\.0|149\.56\.0\.0|151\.80\.0\.0|158\.69\.0\.0|164\.132\.0\.0|167\.114\.0\.0|176\.31\.0\.0|178\.32\.0\.0|185\.12\.64\.0|185\.45\.160\.0|188\.165\.0\.0|192\.95\.0\.0|192\.99\.0\.0|193\.70\.0\.0|198\.27\.64\.0|198\.50\.128\.0|213\.186\.32\.0|213\.251\.128\.0|217\.182\.0\.0)/',
-            
-            // Hetzner
-            '/^(5\.9\.0\.0|31\.172\.128\.0|37\.221\.192\.0|46\.4\.0\.0|78\.46\.0\.0|85\.10\.192\.0|88\.198\.0\.0|91\.198\.141\.0|91\.198\.142\.0|91\.198\.143\.0|91\.198\.144\.0|91\.198\.145\.0|91\.198\.146\.0|91\.198\.147\.0|91\.198\.148\.0|91\.198\.149\.0|91\.198\.150\.0|91\.198\.151\.0|91\.198\.152\.0|91\.198\.153\.0|91\.198\.154\.0|91\.198\.155\.0|91\.198\.156\.0|91\.198\.157\.0|91\.198\.158\.0|91\.198\.159\.0|91\.198\.160\.0|91\.198\.161\.0|91\.198\.162\.0|91\.198\.163\.0|91\.198\.164\.0|91\.198\.165\.0|91\.198\.166\.0|91\.198\.167\.0|91\.198\.168\.0|91\.198\.169\.0|91\.198\.170\.0|91\.198\.171\.0|91\.198\.172\.0|91\.198\.173\.0|91\.198\.174\.0|91\.198\.175\.0|91\.198\.176\.0|91\.198\.177\.0|91\.198\.178\.0|91\.198\.179\.0|91\.198\.180\.0|91\.198\.181\.0|91\.198\.182\.0|91\.198\.183\.0|91\.198\.184\.0|91\.198\.185\.0|91\.198\.186\.0|91\.198\.187\.0|91\.198\.188\.0|91\.198\.189\.0|91\.198\.190\.0|91\.198\.191\.0)/',
-            
-            // Vultr
-            '/^(45\.32\.0\.0|45\.63\.0\.0|66\.42\.32\.0|104\.156\.224\.0|104\.207\.144\.0|107\.191\.32\.0|108\.61\.0\.0|149\.28\.0\.0|155\.138\.128\.0|155\.138\.192\.0|155\.138\.224\.0|155\.138\.240\.0|155\.138\.248\.0|155\.138\.252\.0|155\.138\.254\.0|155\.138\.255\.0|207\.148\.0\.0|207\.246\.64\.0|207\.246\.96\.0|207\.246\.112\.0|207\.246\.120\.0|207\.246\.124\.0|207\.246\.126\.0|207\.246\.127\.0|208\.167\.224\.0|208\.167\.232\.0|208\.167\.236\.0|208\.167\.238\.0|208\.167\.239\.0|45\.77\.0\.0|45\.76\.0\.0|45\.32\.0\.0|104\.238\.128\.0|104\.238\.160\.0|104\.238\.176\.0|104\.238\.184\.0|104\.238\.188\.0|104\.238\.190\.0|104\.238\.191\.0)/'
-        ];
-        
-        // IP adresini noktalı ondalık formatından long'a çevir
-        $ipLong = ip2long($ip);
-        if ($ipLong === false) {
-            return false;
-        }
-        
-        // Datacenter IP aralıklarını kontrol et
-        foreach ($datacenterPatterns as $pattern) {
-            if (preg_match($pattern, $ip)) {
+        try {
+            // Önce veritabanından kontrol et
+            if ($this->isDatacenterFromDatabase($ip)) {
                 return true;
             }
-        }
-        
-        // ASN kontrolü (Autonomous System Number)
-        $asnInfo = $this->getASNInfo($ip);
-        if ($asnInfo) {
-            // Bilinen datacenter ASN'lerini kontrol et
-            $datacenterASNs = [
-                'AS16509', // Amazon AWS
-                'AS14618', // Amazon AWS
-                'AS15169', // Google Cloud
-                'AS8075',  // Microsoft Azure
-                'AS14061', // DigitalOcean
-                'AS63949', // Linode
-                'AS16276', // OVH
-                'AS24940', // Hetzner
-                'AS20473', // Vultr
-                'AS13335', // Cloudflare
-                'AS396982', // Google Cloud
-                'AS26496', // GoDaddy
-                'AS29873', // Rackspace
-                'AS16276', // OVH
-                'AS12876', // Online SAS
-                'AS31898', // Oracle Cloud
-                'AS45102', // Alibaba Cloud
-                'AS37963', // Alibaba Cloud
-                'AS45090', // Tencent Cloud
-                'AS38365', // Baidu Cloud
-                'AS4134',  // Chinanet
-                'AS4837',  // China Unicom
-                'AS9808',  // China Mobile
-                'AS4538',  // China Education and Research Network
-                'AS17621', // China Unicom
-                'AS4812',  // China Telecom
-                'AS9394',  // China Railway Telecom
-                'AS4847',  // China Networks Inter-Exchange
-                'AS9929',  // China Netcom
-                'AS9308',  // Abitcool China Inc.
-            ];
-            
-            if (in_array($asnInfo['asn'], $datacenterASNs)) {
-                return true;
-            }
-            
-            // ASN organizasyon adında datacenter belirteçlerini kontrol et
-            $datacenterKeywords = [
-                'hosting', 'cloud', 'datacenter', 'data center', 'server', 'vps', 'virtual', 
-                'dedicated', 'managed', 'colocation', 'wholesale', 'infrastructure', 'platform',
-                'aws', 'azure', 'google', 'alibaba', 'tencent', 'baidu', 'oracle', 'ibm', 
-                'digitalocean', 'linode', 'vultr', 'ovh', 'hetzner', 'scaleway', 'rackspace'
-            ];
-            
-            foreach ($datacenterKeywords as $keyword) {
-                if (stripos($asnInfo['organization'], $keyword) !== false) {
+
+            // IP Location'dan kontrol et
+            $ipLocationData = $this->getIPLocationData($ip);
+            if ($ipLocationData !== null) {
+                // Doğrudan datacenter kontrolü
+                if (isset($ipLocationData['is_datacenter']) && $ipLocationData['is_datacenter']) {
+                    return true;
+                }
+
+                // Bağlantı tipi kontrolü
+                $connectionType = strtolower($ipLocationData['connection_type'] ?? '');
+                if (in_array($connectionType, ['hosting', 'datacenter', 'server'])) {
+                    return true;
+                }
+
+                // Şirket tipi kontrolü
+                $companyType = strtolower($ipLocationData['company_type'] ?? '');
+                if (in_array($companyType, ['hosting', 'datacenter', 'server'])) {
                     return true;
                 }
             }
+
+            // IP-API'den kontrol et
+            $url = "http://ip-api.com/json/{$ip}?fields=hosting";
+            $response = @file_get_contents($url);
+            if ($response !== false) {
+                $data = json_decode($response, true);
+                if ($data && isset($data['hosting']) && $data['hosting'] === true) {
+                    return true;
+                }
+            }
+
+            return false;
+        } catch (\Exception $e) {
+            $this->logError('Datacenter Check Error: ' . $e->getMessage());
+            return false;
         }
-        
-        return false;
     }
 
-    private function getASNInfo(string $ip): ?array {
+    private function getIP2LocationData(string $ip): ?array {
         try {
-            // WHOIS veya IP-API gibi servislerden ASN bilgisini al
-            $url = "http://ip-api.com/json/{$ip}?fields=as,org,isp";
+            if (!$this->config['ip2location_enabled']) {
+                return null;
+            }
+
+            // Eğer daha önce yüklenmiş veri varsa onu kullan
+            if ($this->ip2locationData !== null) {
+                return $this->ip2locationData;
+            }
+
+            // IP2Location API'sini kullan
+            $url = "https://api.ip2location.io/lookup-ip.json?ip={$ip}&token=d18229d26e1f9600ac90930207556628f2da942acb4d106400f505bf8ff12819";
             $response = @file_get_contents($url);
             
             if ($response === false) {
@@ -1035,363 +1510,44 @@ class IPSecurityLibrary {
             if (!$data) {
                 return null;
             }
-            
-            // AS numarasını parse et (örnek format: "AS15169 Google LLC")
-            $asn = '';
-            if (preg_match('/^AS(\d+)\s/', $data['as'] ?? '', $matches)) {
-                $asn = 'AS' . $matches[1];
-            }
-            
-            return [
-                'asn' => $asn,
-                'organization' => $data['org'] ?? '',
-                'isp' => $data['isp'] ?? ''
+
+            // Sonuçları cache'le
+            $this->ip2locationData = [
+                'country_code' => $data['country_code'] ?? null,
+                'country_name' => $data['country_name'] ?? null,
+                'region_name' => $data['region_name'] ?? null,
+                'city_name' => $data['city_name'] ?? null,
+                'isp' => $data['isp'] ?? null,
+                'domain' => $data['domain'] ?? null,
+                'zip_code' => $data['zip_code'] ?? null,
+                'time_zone' => $data['time_zone'] ?? null,
+                'net_speed' => $data['net_speed'] ?? null,
+                'elevation' => $data['elevation'] ?? null,
+                'usage_type' => $data['usage_type'] ?? null,
+                'address_type' => $data['address_type'] ?? null,
+                'category' => $data['category'] ?? null,
+                'district' => $data['district'] ?? null,
+                'asn' => $data['asn'] ?? null,
+                'as_name' => $data['as'] ?? null,
+                'latitude' => $data['latitude'] ?? null,
+                'longitude' => $data['longitude'] ?? null,
+                'area_code' => $data['area_code'] ?? null,
+                'idd_code' => $data['idd_code'] ?? null,
+                'weather_station_code' => $data['weather_station_code'] ?? null,
+                'weather_station_name' => $data['weather_station_name'] ?? null,
+                'mcc' => $data['mcc'] ?? null,
+                'mnc' => $data['mnc'] ?? null,
+                'mobile_brand' => $data['mobile_brand'] ?? null,
+                'is_proxy' => isset($data['is_proxy']) ? (bool)$data['is_proxy'] : false,
+                'proxy_type' => isset($data['proxy']) && isset($data['proxy']['proxy_type']) ? $data['proxy']['proxy_type'] : null,
+                'threat' => isset($data['proxy']) && isset($data['proxy']['threat']) ? $data['proxy']['threat'] : null
             ];
+
+            return $this->ip2locationData;
+
         } catch (\Exception $e) {
-            $this->logError('ASN Info Error: ' . $e->getMessage());
+            $this->logError('IP2Location Error: ' . $e->getMessage());
             return null;
         }
     }
-
-    private function isISP(string $ip): bool {
-        // Önce datacenter kontrolü yap
-        if ($this->isDatacenter($ip)) {
-            return false;
-        }
-        
-        // ASN bilgisini al
-        $asnInfo = $this->getASNInfo($ip);
-        if (!$asnInfo) {
-            return false;
-        }
-        
-        // ISP belirteçlerini kontrol et
-        $ispKeywords = [
-            'telecom', 'telekom', 'communications', 'broadband', 'isp', 'internet service provider',
-            'mobile', 'wireless', 'cellular', 'cable', 'fiber', 'dsl', 'network', 'internet',
-            'telco', 'provider', 'communication', 'telefonica', 'vodafone', 'verizon', 'at&t',
-            'comcast', 'sprint', 't-mobile', 'orange', 'telefonica', 'mtn', 'etisalat', 'airtel',
-            'turkcell', 'turk telekom', 'superonline', 'ttnet', 'vodafone', 'turknet'
-        ];
-        
-        foreach ($ispKeywords as $keyword) {
-            if (stripos($asnInfo['organization'], $keyword) !== false || 
-                stripos($asnInfo['isp'], $keyword) !== false) {
-                return true;
-            }
-        }
-        
-        // Bilinen ISP ASN'lerini kontrol et
-        $ispASNs = [
-            'AS4809',  // China Telecom
-            'AS7018',  // AT&T
-            'AS3320',  // Deutsche Telekom
-            'AS3215',  // Orange
-            'AS2856',  // British Telecom
-            'AS6147',  // Telefonica
-            'AS3303',  // Swisscom
-            'AS1221',  // Telstra
-            'AS4134',  // Chinanet
-            'AS20115', // Charter Communications
-            'AS7922',  // Comcast
-            'AS701',   // Verizon
-            'AS6328',  // Shaw Communications
-            'AS5089',  // Virgin Media
-            'AS9121',  // Turk Telekom
-            'AS34984', // Turkcell
-            'AS47331', // TurkNet
-            'AS15897', // Vodafone Turkey
-            'AS8386',  // Vodafone Turkey
-            'AS16135', // Turkcell Superonline
-            'AS34984', // Tellcom (Turkcell)
-            'AS9121',  // TTNet
-        ];
-        
-        return in_array($asnInfo['asn'], $ispASNs);
-    }
-
-    private function calculateThreatScore(string $ip): float {
-        // Tehdit skoru hesaplama
-        $score = 0.0;
-        
-        // IP kara listede mi?
-        if ($this->isBlacklisted($ip)) {
-            $score += 5.0;
-        }
-        
-        // VPN/Proxy kontrolü
-        if ($this->isProxy($ip)) {
-            $score += 2.0;
-        }
-        
-        // Tor çıkış noktası kontrolü
-        if ($this->isTorExit($ip)) {
-            $score += 3.0;
-        }
-        
-        return $score;
-    }
-
-    private function getAbuseConfidenceScore(string $ip): float {
-        // Kötüye kullanım güven skoru
-        return 0.0; // Şimdilik varsayılan olarak 0 döndürüyoruz
-    }
-
-    private function calculateGeolocationRisk(string $ip): float {
-        // Coğrafi konum risk hesaplaması
-        return 0.0; // Şimdilik varsayılan olarak 0 döndürüyoruz
-    }
-
-    private function calculateProxyRisk(string $ip): float {
-        // Proxy risk hesaplaması
-        $risk = 0.0;
-        
-        if ($this->isProxy($ip)) {
-            $risk += 0.5;
-        }
-        
-        if ($this->isVPN($ip)) {
-            $risk += 0.3;
-        }
-        
-        if ($this->isTorExit($ip)) {
-            $risk += 0.7;
-        }
-        
-        return $risk;
-    }
-
-    private function calculateBehaviorRisk(string $ip): float {
-        // Davranış risk hesaplaması
-        return 0.0; // Şimdilik varsayılan olarak 0 döndürüyoruz
-    }
-
-    private function calculateReputationRisk(string $ip): float {
-        // İtibar risk hesaplaması
-        return 0.0; // Şimdilik varsayılan olarak 0 döndürüyoruz
-    }
-
-    private function isProxy(string $ip): bool {
-        // Proxy kontrolü
-        $proxyHeaders = [
-            'HTTP_VIA',
-            'HTTP_X_FORWARDED_FOR',
-            'HTTP_FORWARDED_FOR',
-            'HTTP_X_FORWARDED',
-            'HTTP_FORWARDED',
-            'HTTP_CLIENT_IP',
-            'HTTP_FORWARDED_FOR_IP',
-            'VIA',
-            'X_FORWARDED_FOR',
-            'FORWARDED_FOR',
-            'X_FORWARDED',
-            'FORWARDED',
-            'CLIENT_IP',
-            'FORWARDED_FOR_IP',
-            'HTTP_PROXY_CONNECTION'
-        ];
-
-        foreach ($proxyHeaders as $header) {
-            if (isset($_SERVER[$header])) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function getCurrencyByCountry(string $countryCode): string {
-        $currencies = [
-            'TR' => 'TRY',
-            'US' => 'USD',
-            'GB' => 'GBP',
-            'EU' => 'EUR',
-            // Diğer ülkeler eklenebilir
-        ];
-        
-        return $currencies[strtoupper($countryCode)] ?? 'Unknown';
-    }
-
-    private function getCallingCode(string $countryCode): string {
-        $callingCodes = [
-            'TR' => '+90',
-            'US' => '+1',
-            'GB' => '+44',
-            'DE' => '+49',
-            // Diğer ülkeler eklenebilir
-        ];
-        
-        return $callingCodes[strtoupper($countryCode)] ?? 'Unknown';
-    }
-
-    private function getCountryFlag(string $countryCode): string {
-        // Unicode bayrak emojisi oluştur
-        if (strlen($countryCode) === 2) {
-            $flag = mb_convert_encoding('&#' . (127397 + ord(strtoupper($countryCode[0]))) . ';', 'UTF-8', 'HTML-ENTITIES');
-            $flag .= mb_convert_encoding('&#' . (127397 + ord(strtoupper($countryCode[1]))) . ';', 'UTF-8', 'HTML-ENTITIES');
-            return $flag;
-        }
-        
-        return '🏳️'; // Bilinmeyen ülke için beyaz bayrak
-    }
-
-    private function getProxyType(string $ip): ?array {
-        $proxyTypes = [
-            'VPN' => [
-                'name' => 'Virtual Private Network',
-                'description' => 'IP kullanıcının gerçek IP adresini gizlemek için VPN servisi kullanıyor',
-                'anonymity' => 'High'
-            ],
-            'TOR' => [
-                'name' => 'Tor Exit Node',
-                'description' => 'IP adresi Tor ağının çıkış noktası olarak kullanılıyor',
-                'anonymity' => 'High'
-            ],
-            'DCH' => [
-                'name' => 'Data Center/Hosting',
-                'description' => 'IP adresi bir veri merkezi veya hosting sağlayıcıya ait',
-                'anonymity' => 'Low'
-            ],
-            'PUB' => [
-                'name' => 'Public Proxy',
-                'description' => 'Halka açık proxy sunucusu olarak kullanılıyor',
-                'anonymity' => 'High'
-            ],
-            'WEB' => [
-                'name' => 'Web Proxy',
-                'description' => 'Web tabanlı proxy servisi olarak kullanılıyor',
-                'anonymity' => 'High'
-            ],
-            'SES' => [
-                'name' => 'Search Engine Spider',
-                'description' => 'Arama motoru robotu veya crawler olarak kullanılıyor',
-                'anonymity' => 'Low'
-            ],
-            'RES' => [
-                'name' => 'Residential Proxy',
-                'description' => 'Ev kullanıcılarının IP adreslerini proxy olarak kullanan servis',
-                'anonymity' => 'Medium'
-            ],
-            'CPN' => [
-                'name' => 'Consumer Privacy Network',
-                'description' => 'Tüketici gizlilik ağı olarak kullanılıyor',
-                'anonymity' => 'Low'
-            ],
-            'EPN' => [
-                'name' => 'Enterprise Private Network',
-                'description' => 'Kurumsal özel ağ olarak kullanılıyor',
-                'anonymity' => 'Low'
-            ]
-        ];
-
-        if ($this->isVPN($ip)) {
-            return $proxyTypes['VPN'];
-        } elseif ($this->isTorExit($ip)) {
-            return $proxyTypes['TOR'];
-        } elseif ($this->isDatacenter($ip)) {
-            return $proxyTypes['DCH'];
-        } elseif ($this->isProxy($ip)) {
-            return $proxyTypes['PUB'];
-        }
-
-        return null;
-    }
-
-    private function getUsageType(string $ip): string {
-        $usageTypes = [
-            'COM' => 'Commercial',
-            'ORG' => 'Organization',
-            'GOV' => 'Government',
-            'MIL' => 'Military',
-            'EDU' => 'University/College/School',
-            'LIB' => 'Library',
-            'CDN' => 'Content Delivery Network',
-            'ISP' => 'Fixed Line ISP',
-            'MOB' => 'Mobile ISP',
-            'DCH' => 'Data Center/Web Hosting/Transit',
-            'SES' => 'Search Engine Spider',
-            'RSV' => 'Reserved'
-        ];
-
-        $asnInfo = $this->getASNInfo($ip);
-        if (!$asnInfo) {
-            return 'Unknown';
-        }
-
-        // ASN ve organizasyon bilgisine göre kullanım tipini belirle
-        if (stripos($asnInfo['organization'], 'isp') !== false || 
-            stripos($asnInfo['organization'], 'telecom') !== false) {
-            return $usageTypes['ISP'];
-        } elseif ($this->isDatacenter($ip)) {
-            return $usageTypes['DCH'];
-        } elseif (stripos($asnInfo['organization'], 'government') !== false) {
-            return $usageTypes['GOV'];
-        } elseif (stripos($asnInfo['organization'], 'university') !== false || 
-                  stripos($asnInfo['organization'], 'edu') !== false) {
-            return $usageTypes['EDU'];
-        } elseif (stripos($asnInfo['organization'], 'cdn') !== false) {
-            return $usageTypes['CDN'];
-        }
-
-        return $usageTypes['COM'];
-    }
-
-    private function getFraudScore(string $ip): int {
-        $score = 0;
-        
-        // Proxy kullanımı
-        if ($this->isProxy($ip)) {
-            $score += 30;
-        }
-        
-        // VPN kullanımı
-        if ($this->isVPN($ip)) {
-            $score += 20;
-        }
-        
-        // Tor kullanımı
-        if ($this->isTorExit($ip)) {
-            $score += 40;
-        }
-        
-        // Datacenter IP
-        if ($this->isDatacenter($ip)) {
-            $score += 10;
-        }
-        
-        // Tehdit skoru
-        $score += min(($this->calculateThreatScore($ip) * 10), 30);
-        
-        // Kötüye kullanım güven skoru
-        $score += min(($this->getAbuseConfidenceScore($ip) * 10), 20);
-        
-        return min($score, 99);
-    }
-}
-
-// Kullanım örneği:
-try {
-    $config = [
-        'cache_enabled' => true,
-        'geolocation_provider' => 'ip-api',
-        'log_enabled' => true,
-        'api_keys' => [
-            'maxmind' => 'your_api_key',
-            'ipqualityscore' => 'your_api_key'
-        ]
-    ];
-    
-    $security = IPSecurityLibrary::getInstance($config);
-    $analysis = $security->analyzeIP();
-    
-    // Sonuçları kullan
-    if ($analysis['risk_assessment']['risk_level'] === 'HIGH') {
-        // Yüksek riskli ziyaretçi için önlemler al
-        // Örnek: CAPTCHA göster, erişimi engelle vb.
-    }
-    
-} catch (\Exception $e) {
-    // Hata yönetimi
-    error_log("IP Security Error: " . $e->getMessage());
-}
-?> 
+} 

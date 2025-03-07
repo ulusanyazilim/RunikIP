@@ -1,0 +1,55 @@
+# Test dosyaları
+test.php
+*_test.php
+tests/
+
+# Cache ve log dosyaları
+cache/
+logs/
+*.log
+security_logs/
+
+# IDE ve editör dosyaları
+.vscode/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+.cursor/
+.cursor/*
+
+# Veritabanı dosyaları
+databases/
+*.csv
+*.db
+*.sqlite
+
+# Yapılandırma dosyaları
+config.php
+*.config.php
+*config*.php
+
+# Composer
+/vendor/
+composer.lock
+
+# Geçici dosyalar
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Sistem dosyaları
+.DS_Store
+Thumbs.db
+
+# API anahtarları ve hassas bilgiler
+*.env
+.env*
+api_keys.php
+credentials.php 
