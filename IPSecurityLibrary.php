@@ -15,15 +15,13 @@ class IPSecurityLibrary {
     
     private function __construct(array $config = []) {
         $this->config = array_merge([
-            'cache_enabled' => false,
+            'cache_enabled' => true,
             'geolocation_provider' => 'ip-api',
             'log_enabled' => true,
             'log_path' => 'security_logs/',
             'proxy_check_enabled' => true,
             'tor_check_enabled' => true,
             'vpn_check_enabled' => true,
-            'asn_database_path' => 'databases/IP2LOCATION-LITE-ASN.CSV',
-            'datacenter_database_path' => 'databases/IP2LOCATION-DATACENTER.CSV',
             'ip2location_enabled' => true, // IP2Location kontrolünü aktif et
             'risk_threshold' => [
                 'low' => 2,
@@ -39,7 +37,6 @@ class IPSecurityLibrary {
         
         $this->initializeCache();
         $this->initializeLogs();
-        $this->initializeASNDatabase();
     }
     
     public static function getInstance(array $config = []): self {
@@ -63,17 +60,7 @@ class IPSecurityLibrary {
         }
     }
     
-    private function initializeASNDatabase(): void {
-        if (file_exists($this->config['asn_database_path'])) {
-            $this->asnDatabase = new \SplFileObject($this->config['asn_database_path']);
-            $this->asnDatabase->setFlags(\SplFileObject::READ_CSV);
-        }
         
-        if (file_exists($this->config['datacenter_database_path'])) {
-            $this->datacenterDatabase = new \SplFileObject($this->config['datacenter_database_path']);
-            $this->datacenterDatabase->setFlags(\SplFileObject::READ_CSV);
-        }
-    }
     
     private function getASNInfoFromDatabase(string $ip): ?array {
         if (!$this->asnDatabase) {
@@ -88,16 +75,23 @@ class IPSecurityLibrary {
         $this->asnDatabase->rewind();
         while (!$this->asnDatabase->eof()) {
             $row = $this->asnDatabase->fgetcsv();
-            if (!$row) continue;
+            if (!$row || count($row) < 4) continue;
             
-            $startIp = ip2long($row[0]);
-            $endIp = ip2long($row[1]);
+            // CSV dosyasından gelen verileri doğrula
+            $startIp = isset($row[0]) ? ip2long($row[0]) : null;
+            $endIp = isset($row[1]) ? ip2long($row[1]) : null;
+            $asn = isset($row[2]) ? trim($row[2]) : null;
+            $organization = isset($row[3]) ? trim($row[3]) : null;
+            
+            if ($startIp === null || $endIp === null || $asn === null || $organization === null) {
+                continue;
+            }
             
             if ($ipLong >= $startIp && $ipLong <= $endIp) {
                 return [
-                    'asn' => 'AS' . $row[2],
-                    'organization' => $row[3],
-                    'isp' => $row[3]
+                    'asn' => 'AS' . $asn,
+                    'organization' => $organization,
+                    'isp' => $organization
                 ];
             }
         }
@@ -200,7 +194,7 @@ class IPSecurityLibrary {
         if ($asnInfo) {
             return $asnInfo;
         }
-
+        
         // Sonra BGP.Tools'u dene
         $asnInfo = $this->getASNInfoFromBGPTools($ip);
         if ($asnInfo) {
@@ -356,7 +350,7 @@ class IPSecurityLibrary {
                                 $result['is_proxy'] = $security['is_proxy'] ?? false;
                                 $result['is_vpn'] = $security['is_vpn'] ?? false;
                                 $result['is_tor'] = $security['is_tor'] ?? false;
-                                $result['is_datacenter'] = $connection['type'] === 'hosting' || $connection['type'] === 'datacenter';
+                                $result['is_datacenter'] = isset($connection['type']) && ($connection['type'] === 'hosting' || $connection['type'] === 'datacenter');
                                 $result['country'] = $res['location']['country']['name'] ?? null;
                                 $result['country_code'] = $res['location']['country']['code'] ?? null;
                                 $result['region'] = $res['location']['region']['name'] ?? null;
@@ -458,22 +452,22 @@ class IPSecurityLibrary {
                                 $result['city'] = $res['city'] ?? null;
                                 $result['isp'] = $res['org'] ?? null;
                                 $result['postal_code'] = $res['postal'] ?? null;
-                                $result['latitude'] = $res['loc'] ? explode(',', $res['loc'])[0] : null;
-                                $result['longitude'] = $res['loc'] ? explode(',', $res['loc'])[1] : null;
-                                $result['company_type'] = $res['company']['type'] ?? null;
+                                $result['latitude'] = isset($res['loc']) ? explode(',', $res['loc'])[0] ?? null : null;
+                                $result['longitude'] = isset($res['loc']) ? explode(',', $res['loc'])[1] ?? null : null;
+                                $result['company_type'] = isset($res['company']) && isset($res['company']['type']) ? $res['company']['type'] : null;
                                 break;
 
                             case 'maxmind':
                                 $result['country'] = $res['country']['names']['en'] ?? null;
                                 $result['country_code'] = $res['country']['iso_code'] ?? null;
-                                $result['region'] = $res['subdivisions'][0]['names']['en'] ?? null;
-                                $result['city'] = $res['city']['names']['en'] ?? null;
-                                $result['postal_code'] = $res['postal']['code'] ?? null;
-                                $result['latitude'] = $res['location']['latitude'] ?? null;
-                                $result['longitude'] = $res['location']['longitude'] ?? null;
-                                $result['is_proxy'] = $res['traits']['is_anonymous_proxy'] ?? false;
-                                $result['is_vpn'] = $res['traits']['is_anonymous_vpn'] ?? false;
-                                $result['is_tor'] = $res['traits']['is_tor_exit_node'] ?? false;
+                                $result['region'] = isset($res['subdivisions'][0]['names']['en']) ? $res['subdivisions'][0]['names']['en'] : null;
+                                $result['city'] = isset($res['city']['names']['en']) ? $res['city']['names']['en'] : null;
+                                $result['postal_code'] = isset($res['postal']['code']) ? $res['postal']['code'] : null;
+                                $result['latitude'] = isset($res['location']['latitude']) ? $res['location']['latitude'] : null;
+                                $result['longitude'] = isset($res['location']['longitude']) ? $res['location']['longitude'] : null;
+                                $result['is_proxy'] = isset($res['traits']['is_anonymous_proxy']) ? $res['traits']['is_anonymous_proxy'] : false;
+                                $result['is_vpn'] = isset($res['traits']['is_anonymous_vpn']) ? $res['traits']['is_anonymous_vpn'] : false;
+                                $result['is_tor'] = isset($res['traits']['is_tor_exit_node']) ? $res['traits']['is_tor_exit_node'] : false;
                                 break;
                         }
 
@@ -557,9 +551,9 @@ class IPSecurityLibrary {
             }
         }
         
-        return false;
-    }
-
+            return false;
+        }
+        
     private function isISP(string $ip): bool {
         try {
             // Önce IP Location'dan kontrol et
@@ -572,15 +566,15 @@ class IPSecurityLibrary {
                 
                 // Hostname kontrolü
                 if (isset($ipLocationData['hostname']) && $this->isTurkishISP($ipLocationData['hostname'])) {
-                    return true;
-                }
+                return true;
             }
-
+        }
+        
             // IP2Location'dan kontrol et
             $ip2locationData = $this->getIP2LocationData($ip);
             if ($ip2locationData !== null) {
                 if (strpos(strtolower($ip2locationData['usage_type']), 'isp') !== false) {
-                    return true;
+                return true;
                 }
             }
 
@@ -610,9 +604,9 @@ class IPSecurityLibrary {
                     ];
 
                     if (in_array($asn, $turkishISPs)) {
-                        return true;
-                    }
+                    return true;
                 }
+            }
             }
         } catch (\Exception $e) {
             $this->logError('ISP Check Error: ' . $e->getMessage());
@@ -753,8 +747,8 @@ class IPSecurityLibrary {
             // IP2Location kontrolü
             $usageType = $this->getUsageType($ip);
             if ($usageType === 'PROXY') {
-                return true;
-            }
+                    return true;
+                }
 
             // IP Location kontrolü
             $ipLocationData = $this->getIPLocationData($ip);
@@ -764,9 +758,9 @@ class IPSecurityLibrary {
 
             // IP-API kontrolü
             $url = "http://ip-api.com/json/{$ip}?fields=proxy,status";
-            $response = @file_get_contents($url);
-            if ($response !== false) {
-                $data = json_decode($response, true);
+                $response = @file_get_contents($url);
+                if ($response !== false) {
+                    $data = json_decode($response, true);
                 if ($data && isset($data['status']) && $data['status'] === 'success' && isset($data['proxy'])) {
                     if ((bool)$data['proxy'] === true) {
                         return true;
@@ -1305,11 +1299,11 @@ class IPSecurityLibrary {
         // IP Location'dan kontrol et
         $ipLocationData = $this->getIPLocationData($ip);
         if ($ipLocationData !== null) {
-            // Datacenter kontrolü
+        // Datacenter kontrolü
             if (isset($ipLocationData['is_datacenter']) && $ipLocationData['is_datacenter']) {
-                return 'DCH';
-            }
-
+            return 'DCH';
+        }
+        
             // Şirket ve bağlantı tipi kontrolü
             $companyType = strtolower($ipLocationData['company_type'] ?? '');
             $connectionType = strtolower($ipLocationData['connection_type'] ?? '');
@@ -1544,9 +1538,9 @@ class IPSecurityLibrary {
                 'mcc' => $data['mcc'] ?? null,
                 'mnc' => $data['mnc'] ?? null,
                 'mobile_brand' => $data['mobile_brand'] ?? null,
-                'is_proxy' => ($data['is_proxy'] ?? 0) == 1,
-                'proxy_type' => $data['proxy']['proxy_type'] ?? null,
-                'threat' => $data['proxy']['threat'] ?? null
+                'is_proxy' => isset($data['is_proxy']) ? (bool)$data['is_proxy'] : false,
+                'proxy_type' => isset($data['proxy']) && isset($data['proxy']['proxy_type']) ? $data['proxy']['proxy_type'] : null,
+                'threat' => isset($data['proxy']) && isset($data['proxy']['threat']) ? $data['proxy']['threat'] : null
             ];
 
             return $this->ip2locationData;

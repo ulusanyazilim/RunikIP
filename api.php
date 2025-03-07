@@ -19,6 +19,17 @@ try {
     // IP adresi parametresini al
     $ip = $_GET['ip'] ?? null;
     
+    // IP adresi kontrolü
+    if ($ip === null || !filter_var($ip, FILTER_VALIDATE_IP)) {
+        http_response_code(400); // Bad Request
+        echo json_encode([
+            'success' => false,
+            'message' => 'Geçersiz veya eksik IP adresi.',
+            'code' => 400
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        exit; // Hata durumunda işlemi sonlandır
+    }
+    
     // API anahtarı kontrolü (isteğe bağlı)
     $apiKey = $_GET['api_key'] ?? null;
     if ($apiKey !== null && $apiKey !== 'YOUR_API_KEY') {
@@ -97,7 +108,20 @@ try {
                     'proxy_type' => $ipLocationData['proxy_type'] ?? null,
                     'threat_level' => $ipLocationData['threat_level'] ?? null,
                     'threat_types' => $ipLocationData['threat_types'] ?? [],
-                    'confidence_score' => $ipLocationData['confidence_score'] ?? null
+                    'confidence_score' => $ipLocationData['confidence_score'] ?? null,
+                    'net_speed' => $ipLocationData['net_speed'] ?? null,
+                    'area_code' => $ipLocationData['area_code'] ?? null,
+                    'idd_code' => $ipLocationData['idd_code'] ?? null,
+                    'mobile_brand' => $ipLocationData['mobile_brand'] ?? null,
+                    'mcc' => $ipLocationData['mcc'] ?? null,
+                    'mnc' => $ipLocationData['mnc'] ?? null,
+                    'time_zone' => $ipLocationData['time_zone'] ?? null,
+                    'weather_station_code' => $ipLocationData['weather_station_code'] ?? null,
+                    'weather_station_name' => $ipLocationData['weather_station_name'] ?? null,
+                    'elevation' => $ipLocationData['elevation'] ?? null,
+                    'address_type' => $ipLocationData['address_type'] ?? null,
+                    'category' => $ipLocationData['category'] ?? null,
+                    'domain' => $ipLocationData['domain'] ?? null
                 ]
             ],
             'device_info' => [
