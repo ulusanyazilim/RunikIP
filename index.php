@@ -81,55 +81,50 @@ echo "<li><code>network_info</code> - Ağ bilgileri
                 <li>isp (Internet Service Provider)</li>
             </ul>
         </li>
-        <li>proxy_type (Proxy tipi bilgileri)
-            <ul>
-                <li>name (Proxy servis adı)</li>
-                <li>description (Detaylı açıklama)</li>
-                <li>anonymity (Anonimlik seviyesi: Low/Medium/High)</li>
-            </ul>
-        </li>
+        <li>proxy_type (Proxy tipi bilgileri)</li>
         <li>usage_type (IP kullanım tipi)
             <ul>
-                <li>COM - Ticari kullanım</li>
-                <li>ORG - Organizasyon</li>
-                <li>GOV - Devlet kurumu</li>
-                <li>MIL - Askeri kurum</li>
-                <li>EDU - Eğitim kurumu</li>
-                <li>LIB - Kütüphane</li>
-                <li>CDN - İçerik dağıtım ağı</li>
                 <li>ISP - Internet servis sağlayıcı</li>
+                <li>PUB - Bireysel/Ev kullanıcısı</li>
                 <li>MOB - Mobil operatör</li>
+                <li>SAT - Uydu bağlantısı</li>
+                <li>PROXY - Proxy/VPN/TOR</li>
                 <li>DCH - Veri merkezi/Hosting</li>
-                <li>SES - Arama motoru</li>
-                <li>RSV - Rezerve edilmiş</li>
+                <li>COM - Ticari kullanım</li>
             </ul>
         </li>
-        <li>fraud_score (Dolandırıcılık riski skoru, 0-99 arası)</li>
+        <li>ip_location (IP Location detaylı bilgileri)
+            <ul>
+                <li>is_proxy (Proxy durumu)</li>
+                <li>is_datacenter (Datacenter durumu)</li>
+                <li>is_vpn (VPN durumu)</li>
+                <li>is_tor (TOR durumu)</li>
+                <li>is_mobile (Mobil bağlantı durumu)</li>
+                <li>is_satellite (Uydu bağlantı durumu)</li>
+                <li>company_type (Şirket tipi)</li>
+                <li>source (Veri kaynağı)</li>
+                <li>connection_type (Bağlantı tipi)</li>
+                <li>threat_level (Tehdit seviyesi)</li>
+                <li>threat_types (Tehdit tipleri)</li>
+                <li>abuse_score (Kötüye kullanım skoru)</li>
+                <li>asn_abuse_score (ASN kötüye kullanım skoru)</li>
+                <li>confidence_score (Güven skoru)</li>
+            </ul>
+        </li>
     </ul>
 </li>";
-echo "<li><code>security_checks</code> - Güvenlik kontrolleri
+echo "<li><code>security</code> - Güvenlik bilgileri
     <ul>
+        <li>risk_level (Risk seviyesi: LOW/MEDIUM/HIGH)</li>
+        <li>risk_score (Risk skoru)</li>
+        <li>risk_factors (Risk faktörleri)</li>
         <li>is_proxy (Proxy kullanımı)</li>
         <li>is_vpn (VPN kullanımı)</li>
-        <li>is_tor (Tor kullanımı)</li>
-        <li>is_datacenter (Datacenter IP)</li>
+        <li>is_tor (TOR kullanımı)</li>
         <li>threat_score (Tehdit skoru)</li>
         <li>abuse_confidence_score (Kötüye kullanım güven skoru)</li>
     </ul>
 </li>";
-echo "<li><code>device_info</code> - Cihaz bilgileri
-    <ul>
-        <li>type (cihaz tipi)</li>
-        <li>brand (marka)</li>
-        <li>model (model)</li>
-        <li>is_mobile/is_tablet/is_desktop (cihaz türü)</li>
-    </ul>
-</li>";
-echo "<li><code>browser_info</code> - Tarayıcı bilgileri</li>";
-echo "<li><code>operating_system</code> - İşletim sistemi bilgileri</li>";
-echo "<li><code>language_info</code> - Dil bilgileri</li>";
-echo "<li><code>risk_assessment</code> - Risk değerlendirmesi</li>";
-echo "<li><code>cached</code> - Önbellekten mi geldi?</li>";
 echo "</ul>";
 
 // Örnek Kullanımlar
@@ -169,59 +164,29 @@ echo htmlspecialchars('{
                 "organization": "Google LLC",
                 "isp": "Google LLC"
             },
-            "proxy_type": {
-                "name": "Data Center/Hosting",
-                "description": "IP adresi bir veri merkezi veya hosting sağlayıcıya ait",
-                "anonymity": "Low"
-            },
+            "proxy_type": "DCH",
             "usage_type": "DCH",
-            "fraud_score": 10
-        },
-        "device_info": {
-            "type": "desktop",
-            "brand": "Unknown",
-            "model": "Unknown",
-            "is_mobile": false,
-            "is_tablet": false,
-            "is_desktop": true
-        },
-        "operating_system": {
-            "name": "Windows",
-            "version": "11",
-            "architecture": "x64"
-        },
-        "browser": {
-            "name": "Chrome",
-            "version": "121",
-            "user_agent": "Mozilla/5.0...",
-            "features": {
-                "cookies_enabled": true,
-                "javascript_enabled": true,
-                "language": "tr-TR",
-                "do_not_track": "0"
+            "ip_location": {
+                "is_proxy": false,
+                "is_datacenter": true,
+                "is_vpn": false,
+                "is_tor": false,
+                "is_mobile": false,
+                "is_satellite": false,
+                "company_type": "hosting",
+                "source": "ipapi_is",
+                "connection_type": "datacenter",
+                "threat_level": "low",
+                "threat_types": [],
+                "abuse_score": 0,
+                "asn_abuse_score": 0,
+                "confidence_score": 100
             }
-        },
-        "language": {
-            "code": "tr-TR",
-            "name": "Türkçe",
-            "all": [
-                {
-                    "code": "tr-TR",
-                    "name": "Türkçe",
-                    "priority": 1.0
-                }
-            ]
         },
         "security": {
             "risk_level": "LOW",
-            "risk_score": 10,
-            "risk_factors": {
-                "geolocation_risk": 0,
-                "proxy_risk": 0,
-                "behavior_risk": 0,
-                "reputation_risk": 0
-            },
-            "recommendations": [],
+            "risk_score": 0,
+            "risk_factors": ["datacenter_ip"],
             "is_proxy": false,
             "is_vpn": false,
             "is_tor": false,
@@ -239,8 +204,8 @@ echo "<h3>Hata Yanıtı</h3>";
 echo "<pre class='response'>";
 echo htmlspecialchars('{
     "success": false,
-    "error": "Invalid IP address",
-    "timestamp": 1707242486
+    "message": "Invalid IP address",
+    "code": 400
 }', ENT_QUOTES);
 echo "</pre>";
 
@@ -249,13 +214,14 @@ echo "<h3>Notlar</h3>";
 echo "<ul>";
 echo "<li>API yanıtları JSON formatındadır</li>";
 echo "<li>Başarılı yanıtlarda HTTP 200 kodu döner</li>";
-echo "<li>Hata durumunda HTTP 500 kodu döner</li>";
+echo "<li>Hata durumunda ilgili HTTP kodu döner (400, 403, 500 vb.)</li>";
 echo "<li>Cache sistemi varsayılan olarak aktiftir (1 saat)</li>";
 echo "<li>Network bilgileri (datacenter/ISP) gerçek zamanlı olarak kontrol edilir</li>";
-echo "<li>ASN bilgileri ip-api.com servisinden alınır</li>";
+echo "<li>ASN bilgileri birden fazla kaynaktan doğrulanır</li>";
 echo "<li>Datacenter ve ISP tespiti için geniş bir veritabanı kullanılır</li>";
-echo "<li>Proxy tipleri ve kullanım tipleri IP2Location veritabanı standartlarına göre sınıflandırılır</li>";
-echo "<li>Fraud Score hesaplaması proxy, VPN, Tor ve tehdit skorlarına göre yapılır (0-99)</li>";
+echo "<li>Proxy tipleri ve kullanım tipleri detaylı olarak sınıflandırılır</li>";
+echo "<li>Risk skorları ve tehdit seviyeleri çoklu faktöre göre hesaplanır</li>";
+echo "<li>Türk ISP'leri için özel optimizasyon yapılmıştır</li>";
 echo "</ul>";
 
 echo "</div>";
